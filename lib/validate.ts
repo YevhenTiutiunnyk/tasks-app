@@ -1,4 +1,5 @@
 import { isValidIsoDate } from './dates';
+import { parseOccurrenceId } from './recurrence';
 import type { Category, Operation, ParseResult, Task } from './types';
 
 export interface ValidationContext {
@@ -98,4 +99,40 @@ export function validateParseResult(
     }));
 
   return { operations, rejected, needsTime };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Идентификатор задачи — либо uuid строки в базе, либо синтетический
+ * occ:<правило>:<дата> у ещё не материализованного вхождения серии.
+ * Без этой проверки чужая строка доходит до Postgres и роняет запрос
+ * приведением к uuid, то есть отвечает 500 вместо внятного 400.
+ */
+export function isValidTaskId(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  if (UUID.test(value)) return true;
+  const occurrence = parseOccurrenceId(value);
+  return occurrence !== null && UUID.test(occurrence.recurrenceId) && isValidIsoDate(occurrence.date);
+}
+
+/**
+ * Те же границы времени и длительности, что проверяются у ответа модели.
+ * Ручной ввод из интерфейса не должен быть доверенней, чем вывод Claude.
+ */
+export function isValidSlot(fields: {
+  startMinute?: number | null;
+  durationMinutes?: number | null;
+}): boolean {
+  const { startMinute, durationMinutes } = fields;
+  if (startMinute != null && (!Number.isInteger(startMinute) || startMinute < 0 || startMinute > 1439)) {
+    return false;
+  }
+  if (
+    durationMinutes != null &&
+    (!Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes > MAX_DURATION)
+  ) {
+    return false;
+  }
+  return true;
 }

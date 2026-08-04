@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { isValidIsoDate } from '@/lib/dates';
 import { sql } from '@/lib/db';
 import { applyOperations } from '@/lib/apply';
+import { badRequest, readJson } from '@/lib/http';
+import { isValidSlot, isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseOccurrenceId } from '@/lib/recurrence';
 import type { Operation } from '@/lib/types';
@@ -10,8 +12,23 @@ async function respond(today: string, batchId: string | null) {
   return NextResponse.json({ batchId, week: await loadWeek(today) });
 }
 
+/**
+ * applyOperations бросает, если задачи уже нет — например при двойном клике
+ * по «удалить» или на устаревшей вкладке. Это не сбой сервера, а гонка,
+ * поэтому отвечаем 409, а не 500.
+ */
+async function applyOrConflict(text: string, operations: Operation[], today: string) {
+  try {
+    const { batchId } = await applyOperations(text, operations);
+    return respond(today, batchId);
+  } catch (error) {
+    console.error('applyOperations failed', error);
+    return NextResponse.json({ error: 'Задача изменилась или уже удалена' }, { status: 409 });
+  }
+}
+
 export async function POST(request: Request) {
-  const body = (await request.json()) as {
+  const body = await readJson<{
     today: string;
     title: string;
     date: string;
@@ -19,21 +36,27 @@ export async function POST(request: Request) {
     durationMinutes: number | null;
     allDay: boolean;
     categoryId: string | null;
-  };
-  if (!isValidIsoDate(body.today) || !isValidIsoDate(body.date) || !body.title.trim()) {
-    return NextResponse.json({ error: 'Некорректные данные' }, { status: 400 });
+  }>(request);
+  if (!body) return badRequest('Не удалось разобрать тело запроса');
+  if (!isValidIsoDate(body.today) || !isValidIsoDate(body.date)) {
+    return badRequest('Некорректная дата');
+  }
+  if (typeof body.title !== 'string' || !body.title.trim()) {
+    return badRequest('Пустое название');
+  }
+  if (!isValidSlot(body)) {
+    return badRequest('Некорректное время или длительность');
   }
   const operation: Operation = {
     type: 'create', title: body.title, date: body.date, startMinute: body.startMinute,
     durationMinutes: body.durationMinutes, allDay: body.allDay,
     categoryId: body.categoryId, recurrence: null,
   };
-  const { batchId } = await applyOperations('создано вручную', [operation]);
-  return respond(body.today, batchId);
+  return applyOrConflict('создано вручную', [operation], body.today);
 }
 
 export async function PATCH(request: Request) {
-  const body = (await request.json()) as {
+  const body = await readJson<{
     today: string;
     taskId: string;
     scope?: 'one' | 'series';
@@ -44,11 +67,13 @@ export async function PATCH(request: Request) {
     allDay?: boolean | null;
     categoryId?: string | null;
     done?: boolean;
-  };
+  }>(request);
+  if (!body) return badRequest('Не удалось разобрать тело запроса');
 
-  if (!isValidIsoDate(body.today)) {
-    return NextResponse.json({ error: 'Некорректная дата' }, { status: 400 });
-  }
+  if (!isValidIsoDate(body.today)) return badRequest('Некорректная дата');
+  if (!isValidTaskId(body.taskId)) return badRequest('Некорректный идентификатор задачи');
+  if (body.date != null && !isValidIsoDate(body.date)) return badRequest('Некорректная дата');
+  if (!isValidSlot(body)) return badRequest('Некорректное время или длительность');
 
   // Отметка «выполнено» серию не трогает и в журнал не пишется.
   if (body.done !== undefined) {
@@ -88,19 +113,18 @@ export async function PATCH(request: Request) {
     allDay: body.allDay ?? null,
     categoryId: body.categoryId ?? null,
   };
-  const { batchId } = await applyOperations('изменено вручную', [operation]);
-  return respond(body.today, batchId);
+  return applyOrConflict('изменено вручную', [operation], body.today);
 }
 
 export async function DELETE(request: Request) {
-  const body = (await request.json()) as {
+  const body = await readJson<{
     today: string;
     taskId: string;
     scope?: 'one' | 'series';
-  };
-  if (!isValidIsoDate(body.today)) {
-    return NextResponse.json({ error: 'Некорректная дата' }, { status: 400 });
-  }
+  }>(request);
+  if (!body) return badRequest('Не удалось разобрать тело запроса');
+  if (!isValidIsoDate(body.today)) return badRequest('Некорректная дата');
+  if (!isValidTaskId(body.taskId)) return badRequest('Некорректный идентификатор задачи');
 
   const occurrence = parseOccurrenceId(body.taskId);
   if (body.scope === 'series' && occurrence) {
@@ -108,8 +132,5 @@ export async function DELETE(request: Request) {
     return respond(body.today, null);
   }
 
-  const { batchId } = await applyOperations('удалено вручную', [
-    { type: 'delete', taskId: body.taskId },
-  ]);
-  return respond(body.today, batchId);
+  return applyOrConflict('удалено вручную', [{ type: 'delete', taskId: body.taskId }], body.today);
 }

@@ -1,18 +1,23 @@
 import { NextResponse } from 'next/server';
 import { isValidIsoDate } from '@/lib/dates';
-import { sql } from '@/lib/db';
+import { sql, toIsoDate } from '@/lib/db';
+import { badRequest, readJson } from '@/lib/http';
+import { isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseClarification } from '@/lib/parse-clarify';
 
 export async function POST(request: Request) {
-  const { answers, today } = (await request.json()) as {
+  const body = await readJson<{
     answers?: { taskId: string; text: string }[];
     today?: string;
-  };
+  }>(request);
+  if (!body) return badRequest('Не удалось разобрать тело запроса');
+  const { answers, today } = body;
 
-  if (!answers?.length) return NextResponse.json({ error: 'Нечего уточнять' }, { status: 400 });
-  if (!today || !isValidIsoDate(today)) {
-    return NextResponse.json({ error: 'Некорректная дата' }, { status: 400 });
+  if (!answers?.length) return badRequest('Нечего уточнять');
+  if (!today || !isValidIsoDate(today)) return badRequest('Некорректная дата');
+  if (answers.some((a) => !isValidTaskId(a.taskId) || typeof a.text !== 'string')) {
+    return badRequest('Некорректный ответ на уточнение');
   }
 
   const failed: string[] = [];
@@ -23,7 +28,9 @@ export async function POST(request: Request) {
 
     let slot;
     try {
-      slot = await parseClarification(answer.text, row.date, today);
+      // Драйвер отдаёт колонку date объектом Date, а разбор ждёт строку
+      // 'YYYY-MM-DD'. Без toIsoDate уточнение молча не срабатывало бы.
+      slot = await parseClarification(answer.text, toIsoDate(row.date), today);
     } catch {
       failed.push(answer.taskId);
       continue;
