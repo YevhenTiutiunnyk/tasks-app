@@ -74,10 +74,22 @@ export async function applyOperations(
       let taskId = operation.taskId;
       const occurrence = parseOccurrenceId(taskId);
       if (occurrence) {
-        const created = await materializeOccurrence(tx, occurrence.recurrenceId, occurrence.date);
-        taskId = created.id;
-        snapshot.tasks.push({ id: created.id, before: null });
-        snapshot.exceptions.push({ recurrenceId: occurrence.recurrenceId, date: occurrence.date });
+        // Вхождение могло быть материализовано раньше — этой же пачкой или прошлой.
+        // Без этой проверки вторая операция над тем же занятием создала бы дубль.
+        const [existing] = await tx`
+          select * from tasks
+          where recurrence_id = ${occurrence.recurrenceId}
+            and recurrence_date = ${occurrence.date}
+        `;
+        if (existing) {
+          taskId = existing.id;
+          snapshot.tasks.push({ id: taskId, before: rowToTask(existing) });
+        } else {
+          const created = await materializeOccurrence(tx, occurrence.recurrenceId, occurrence.date);
+          taskId = created.id;
+          snapshot.tasks.push({ id: created.id, before: null });
+          snapshot.exceptions.push({ recurrenceId: occurrence.recurrenceId, date: occurrence.date });
+        }
       } else {
         const [row] = await tx`select * from tasks where id = ${taskId}`;
         if (!row) throw new Error(`Задача ${taskId} не найдена`);
@@ -127,7 +139,10 @@ export async function undoBatch(batchId: string): Promise<boolean> {
 
     const snapshot = batch.snapshot as Snapshot;
 
-    for (const entry of snapshot.tasks) {
+    // В обратном порядке: если пачка трогала одну задачу дважды, первым записан
+    // её исходный вид. Идя вперёд, мы бы восстановили оригинал, а потом затёрли
+    // его промежуточным состоянием из второй записи.
+    for (const entry of [...snapshot.tasks].reverse()) {
       if (entry.before === null) {
         await tx`delete from tasks where id = ${entry.id}`;
         continue;

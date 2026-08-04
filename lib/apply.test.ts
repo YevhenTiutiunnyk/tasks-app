@@ -122,6 +122,72 @@ run('applyOperations', () => {
     expect(await undoBatch(batchId)).toBe(false);
   });
 
+  it('откат возвращает исходное состояние, если пачка дважды трогала одну задачу', async () => {
+    await clean();
+    await applyOperations('создать', [create('Врач', '2030-01-09', 600)]);
+    const [task] = await getTasksBetween(FROM, TO);
+    const { batchId } = await applyOperations('перенеси и переименуй', [
+      {
+        type: 'update', taskId: task.id, title: null, date: '2030-01-11',
+        startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+      },
+      {
+        type: 'update', taskId: task.id, title: 'Стоматолог', date: null,
+        startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+      },
+    ]);
+    expect(await undoBatch(batchId)).toBe(true);
+    const [restored] = await getTasksBetween(FROM, TO);
+    expect(restored.title).toBe('Врач');
+    expect(restored.date).toBe('2030-01-09');
+  });
+
+  it('не дублирует вхождение серии, если пачка трогает его дважды', async () => {
+    await clean();
+    await applyOperations('каждый вторник в 8 зал', [
+      {
+        type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
+        allDay: false, categoryId: null,
+        recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+      },
+    ]);
+    const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
+    const occurrence = `occ:${rule.id}:2030-01-08`;
+    await applyOperations('передвинь и переименуй зал во вторник', [
+      {
+        type: 'update', taskId: occurrence, title: null, date: null,
+        startMinute: 600, durationMinutes: null, allDay: null, categoryId: null,
+      },
+      {
+        type: 'update', taskId: occurrence, title: 'Бассейн', date: null,
+        startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+      },
+    ]);
+    const tasks = await getTasksBetween(FROM, TO);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe('Бассейн');
+    expect(tasks[0].startMinute).toBe(600);
+  });
+
+  it('откат материализации убирает и исключение, и задачу', async () => {
+    await clean();
+    await applyOperations('каждый вторник в 8 зал', [
+      {
+        type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
+        allDay: false, categoryId: null,
+        recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+      },
+    ]);
+    const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
+    const { batchId } = await applyOperations('убери зал во вторник', [
+      { type: 'delete', taskId: `occ:${rule.id}:2030-01-08` },
+    ]);
+    expect(await undoBatch(batchId)).toBe(true);
+    const exceptions = await sql`select * from recurrence_exceptions where recurrence_id = ${rule.id}`;
+    expect(exceptions).toHaveLength(0);   // иначе занятие исчезло бы из календаря навсегда
+    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+  });
+
   it('не оставляет следов, если операция посреди пачки упала', async () => {
     await clean();
     await expect(
