@@ -33,6 +33,11 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
     const body: Record<string, unknown> = { today, taskId: task.id, scope };
 
     if (method === 'PATCH') {
+      if (!title.trim()) {
+        setError('Название не может быть пустым');
+        setPending(null);
+        return;
+      }
       const startMinute = allDay ? null : clockToMinutes(clock);
       if (!allDay && startMinute === null) {
         setError('Время нужно в формате 9:30');
@@ -46,7 +51,7 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
         return;
       }
       Object.assign(body, {
-        title, date, startMinute, durationMinutes, allDay,
+        title: title.trim(), date, startMinute, durationMinutes, allDay,
         categoryId: categoryId || null,
       });
     }

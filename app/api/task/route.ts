@@ -103,10 +103,20 @@ export async function PATCH(request: Request) {
     return respond(body.today, null);
   }
 
+  // На этом пути правка всегда приходит из карточки задачи и несёт весь набор
+  // полей, поэтому название обязательно: с replace пустое или отсутствующее
+  // затёрло бы его в базе.
+  if (typeof body.title !== 'string' || !body.title.trim()) {
+    return badRequest('Пустое название');
+  }
+
+  // Правка из карточки присылает все поля разом, поэтому это полная замена:
+  // здесь null значит «очистить», а не «модель про поле не сказала».
   const operation: Operation = {
     type: 'update',
+    replace: true,
     taskId: body.taskId,
-    title: body.title ?? null,
+    title: body.title,
     date: body.date ?? null,
     startMinute: body.startMinute ?? null,
     durationMinutes: body.durationMinutes ?? null,

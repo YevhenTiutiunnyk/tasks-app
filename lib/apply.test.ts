@@ -199,4 +199,45 @@ run('applyOperations', () => {
     ).rejects.toThrow();
     expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
   });
+
+  it('replace: true заменяет все поля разом — категория и время очищаются', async () => {
+    await clean();
+    await applyOperations('создать', [
+      { type: 'create', title: 'Врач', date: '2030-01-09', startMinute: 600, durationMinutes: 60,
+        allDay: false, categoryId: 'health', recurrence: null },
+    ]);
+    const [task] = await getTasksBetween(FROM, TO);
+    expect(task.categoryId).toBe('health');
+
+    // Так шлёт карточка задачи: все поля разом, null значит «очистить».
+    await applyOperations('правка из карточки', [
+      {
+        type: 'update', taskId: task.id, replace: true,
+        title: 'Врач', date: '2030-01-09', startMinute: null, durationMinutes: null,
+        allDay: true, categoryId: null,
+      },
+    ]);
+    const [updated] = await getTasksBetween(FROM, TO);
+    expect(updated.categoryId).toBeNull();
+    expect(updated.allDay).toBe(true);
+    expect(updated.startMinute).toBeNull();
+  });
+
+  it('без replace null в полях не трогает их — прежнее поведение сохранилось', async () => {
+    await clean();
+    await applyOperations('создать', [
+      { type: 'create', title: 'Врач', date: '2030-01-09', startMinute: 600, durationMinutes: 60,
+        allDay: false, categoryId: 'health', recurrence: null },
+    ]);
+    const [task] = await getTasksBetween(FROM, TO);
+
+    await applyOperations('переименуй', [
+      { type: 'update', taskId: task.id, title: 'Стоматолог', date: null,
+        startMinute: null, durationMinutes: null, allDay: null, categoryId: null },
+    ]);
+    const [updated] = await getTasksBetween(FROM, TO);
+    expect(updated.title).toBe('Стоматолог');
+    expect(updated.categoryId).toBe('health');   // null без replace не трогает поле
+    expect(updated.startMinute).toBe(600);        // время тоже не тронуто
+  });
 });

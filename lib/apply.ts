@@ -101,14 +101,26 @@ export async function applyOperations(
         continue;
       }
 
-      // Обновляем только те поля, что модель действительно назвала.
+      // Обновляем только те поля, что модель действительно назвала. Для правки
+      // из карточки задачи это не годится: она присылает все поля разом, и там
+      // null значит «очистить», а не «не трогать». Флаг replace разделяет
+      // эти два смысла.
       const patch: Record<string, unknown> = { updated_at: new Date() };
-      if (operation.title !== null) patch.title = operation.title;
-      if (operation.date !== null) patch.date = operation.date;
-      if (operation.startMinute !== null) patch.start_minute = operation.startMinute;
-      if (operation.durationMinutes !== null) patch.duration_minutes = operation.durationMinutes;
-      if (operation.allDay !== null) patch.all_day = operation.allDay;
-      if (operation.categoryId !== null) patch.category_id = operation.categoryId;
+      if (operation.replace) {
+        patch.title = operation.title;
+        patch.date = operation.date;
+        patch.start_minute = operation.startMinute;
+        patch.duration_minutes = operation.durationMinutes;
+        patch.all_day = operation.allDay;
+        patch.category_id = operation.categoryId;
+      } else {
+        if (operation.title !== null) patch.title = operation.title;
+        if (operation.date !== null) patch.date = operation.date;
+        if (operation.startMinute !== null) patch.start_minute = operation.startMinute;
+        if (operation.durationMinutes !== null) patch.duration_minutes = operation.durationMinutes;
+        if (operation.allDay !== null) patch.all_day = operation.allDay;
+        if (operation.categoryId !== null) patch.category_id = operation.categoryId;
+      }
 
       await tx`update tasks set ${tx(patch)} where id = ${taskId}`;
     }
