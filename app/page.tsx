@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { DayFeed } from '@/components/DayFeed';
 import { WeekGrid } from '@/components/WeekGrid';
 import { addDays } from '@/lib/dates';
 import type { Settings, Task } from '@/lib/types';
@@ -20,6 +21,15 @@ function todayIso(): string {
 export default function Home() {
   const [anchor, setAnchor] = useState(todayIso);
   const [week, setWeek] = useState<WeekData | null>(null);
+  const [wide, setWide] = useState(true);
+
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 768px)');
+    const sync = () => setWide(query.matches);
+    sync();
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,14 +50,25 @@ export default function Home() {
         <span className="ml-auto text-sm opacity-60">{week.from} — {week.to}</span>
       </header>
 
-      <WeekGrid
-        from={week.from}
-        to={week.to}
-        tasks={week.tasks}
-        settings={week.settings}
-        today={todayIso()}
-        onSelect={(task) => console.log('выбрана задача', task)}
-      />
+      {wide ? (
+        <WeekGrid
+          from={week.from}
+          to={week.to}
+          tasks={week.tasks}
+          settings={week.settings}
+          today={todayIso()}
+          onSelect={(task) => console.log('выбрана задача', task)}
+        />
+      ) : (
+        <DayFeed
+          from={week.from}
+          to={week.to}
+          tasks={week.tasks}
+          settings={week.settings}
+          today={todayIso()}
+          onSelect={(task) => console.log('выбрана задача', task)}
+        />
+      )}
     </main>
   );
 }
