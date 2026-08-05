@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 interface Props {
   message: string;
@@ -9,10 +9,19 @@ interface Props {
 }
 
 export function UndoToast({ message, onUndo, onDismiss }: Props) {
+  // onDismiss обычно приходит инлайновой стрелкой с новой идентичностью на
+  // каждом рендере родителя. Держим актуальный колбэк в ref и не завязываем
+  // на него таймер, иначе любой рендер родителя (смена wide, повторный
+  // setWeek и т.п.) сбрасывал бы восьмисекундный отсчёт заново.
+  const dismissRef = useRef(onDismiss);
   useEffect(() => {
-    const timer = setTimeout(onDismiss, 8000);
+    dismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => dismissRef.current(), 8000);
     return () => clearTimeout(timer);
-  }, [onDismiss, message]);
+  }, [message]);
 
   return (
     <div className="fixed inset-x-0 bottom-20 z-10 flex justify-center px-3">

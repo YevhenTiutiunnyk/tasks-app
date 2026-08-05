@@ -44,7 +44,12 @@ export default function Home() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ batchId: undo.batchId, today: todayIso() }),
     });
-    if (response.ok) setWeek((await response.json()).week);
+    // /api/undo, как и /api/command, отвечает неделей вокруг today — сдвигаем
+    // anchor симметрично handleResult, иначе заголовок разойдётся со стрелками.
+    if (response.ok) {
+      setAnchor(todayIso());
+      setWeek((await response.json()).week);
+    }
     setUndo(null);
   }
 

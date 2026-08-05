@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
 export interface CommandResponse {
@@ -18,6 +19,7 @@ interface Props {
 const DRAFT_KEY = 'command-draft';
 
 export function CommandBar({ today, onResult }: Props) {
+  const router = useRouter();
   const [text, setText] = useState(() =>
     typeof window === 'undefined' ? '' : (localStorage.getItem(DRAFT_KEY) ?? ''),
   );
@@ -48,7 +50,7 @@ export function CommandBar({ today, onResult }: Props) {
         }),
       });
       if (response.status === 401) {
-        window.location.href = '/login';      // черновик остаётся в localStorage
+        router.push('/login');                // черновик остаётся в localStorage
         return;
       }
       const body = await response.json();
