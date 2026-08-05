@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { ClarifyDialog, type ClarifyItem } from '@/components/ClarifyDialog';
 import { CommandBar, type CommandResponse } from '@/components/CommandBar';
 import { DayFeed } from '@/components/DayFeed';
 import { UndoToast } from '@/components/UndoToast';
@@ -25,6 +26,7 @@ export default function Home() {
   const [week, setWeek] = useState<WeekData | null>(null);
   const [wide, setWide] = useState(true);
   const [undo, setUndo] = useState<{ batchId: string; message: string } | null>(null);
+  const [clarify, setClarify] = useState<ClarifyItem[]>([]);
 
   function handleResult(response: CommandResponse) {
     // /api/command всегда отвечает неделей вокруг today. Если пользователь листнул
@@ -35,6 +37,7 @@ export default function Home() {
     if (response.batchId) {
       setUndo({ batchId: response.batchId, message: response.reply || 'Готово' });
     }
+    if (response.needsTime.length > 0) setClarify(response.needsTime);
   }
 
   async function runUndo() {
@@ -102,6 +105,21 @@ export default function Home() {
 
       {undo && (
         <UndoToast message={undo.message} onUndo={() => void runUndo()} onDismiss={() => setUndo(null)} />
+      )}
+      {clarify.length > 0 && (
+        <ClarifyDialog
+          items={clarify}
+          today={todayIso()}
+          onDone={(week, remaining) => {
+            // /api/clarify тоже отвечает неделей вокруг today — сдвигаем anchor
+            // симметрично handleResult и runUndo, иначе заголовок разойдётся
+            // со стрелками.
+            setAnchor(todayIso());
+            setWeek(week as WeekData);
+            setClarify(remaining);
+          }}
+          onLater={() => setClarify([])}
+        />
       )}
       <CommandBar today={todayIso()} onResult={handleResult} />
     </main>
