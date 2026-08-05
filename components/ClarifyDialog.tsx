@@ -58,16 +58,24 @@ export function ClarifyDialog({ items, today, onDone, onLater }: Props) {
         setError(body.error ?? 'Не получилось');
         return;
       }
+      // В окне остаётся то, с чем ещё не разобрались: строки, которые сервер
+      // не сумел разобрать, и строки, которые пользователь не заполнил и не
+      // отметил тумблером. Второе важно не меньше первого: иначе задача молча
+      // осталась бы на весь день, хотя человек такого не выбирал. Задачи с
+      // включённым тумблером на сервер не уходят и в остаток не попадают.
       const failed: string[] = body.failed ?? [];
+      const remaining = items.filter(
+        (item) =>
+          failed.includes(item.taskId) ||
+          (!allDay[item.taskId] && !(values[item.taskId] ?? '').trim()),
+      );
+      // Неделю показываем сразу — часть задач уже встала на места, — но окно
+      // не закрываем, пока остаток не пуст: иначе сообщение об ошибке умрёт
+      // в том же кадре вместе с размонтированием.
       if (failed.length > 0) {
-        // Неделю показываем сразу — часть задач уже встала на места, — но окно
-        // не закрываем: иначе сообщение об ошибке умрёт в том же кадре, а
-        // неразобранные задачи молча останутся на весь день.
         setError('Часть фраз разобрать не вышло — попробуй сказать иначе');
-        onDone(body.week, items.filter((item) => failed.includes(item.taskId)));
-        return;
       }
-      onDone(body.week, []);
+      onDone(body.week, remaining);
     } catch {
       setError('Нет связи с сервером');
     } finally {
@@ -85,7 +93,11 @@ export function ClarifyDialog({ items, today, onDone, onLater }: Props) {
 
         {items.map((item) => (
           <div key={item.taskId} className="border-t border-neutral-500/20 py-3">
-            <p className="mb-2 text-sm font-medium">{item.title}</p>
+            <p className="text-sm font-medium">{item.title}</p>
+            {/* Вопрос модели сформулирован под конкретный случай: когда не
+                понятен даже день, он спрашивает и день, и время. Без него на
+                экране остаётся только общий подзаголовок, и разница пропадает. */}
+            {item.question && <p className="mb-2 text-xs opacity-60">{item.question}</p>}
             <div className="flex items-center gap-2">
               <input
                 value={values[item.taskId] ?? ''}
