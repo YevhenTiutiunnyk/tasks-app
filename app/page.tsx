@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { CommandBar, type CommandResponse } from '@/components/CommandBar';
 import { DayFeed } from '@/components/DayFeed';
+import { UndoToast } from '@/components/UndoToast';
 import { WeekGrid } from '@/components/WeekGrid';
 import { addDays } from '@/lib/dates';
 import type { Settings, Task } from '@/lib/types';
@@ -22,6 +24,29 @@ export default function Home() {
   const [anchor, setAnchor] = useState(todayIso);
   const [week, setWeek] = useState<WeekData | null>(null);
   const [wide, setWide] = useState(true);
+  const [undo, setUndo] = useState<{ batchId: string; message: string } | null>(null);
+
+  function handleResult(response: CommandResponse) {
+    // /api/command всегда отвечает неделей вокруг today. Если пользователь листнул
+    // на другую неделю, показать её ответ, не сдвинув anchor, значит рассогласовать
+    // экран со стрелками: «←» отсчитает семь дней от устаревшего якоря.
+    setAnchor(todayIso());
+    setWeek(response.week as WeekData);
+    if (response.batchId) {
+      setUndo({ batchId: response.batchId, message: response.reply || 'Готово' });
+    }
+  }
+
+  async function runUndo() {
+    if (!undo) return;
+    const response = await fetch('/api/undo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ batchId: undo.batchId, today: todayIso() }),
+    });
+    if (response.ok) setWeek((await response.json()).week);
+    setUndo(null);
+  }
 
   useEffect(() => {
     const query = window.matchMedia('(min-width: 768px)');
@@ -69,6 +94,11 @@ export default function Home() {
           onSelect={(task) => console.log('выбрана задача', task)}
         />
       )}
+
+      {undo && (
+        <UndoToast message={undo.message} onUndo={() => void runUndo()} onDismiss={() => setUndo(null)} />
+      )}
+      <CommandBar today={todayIso()} onResult={handleResult} />
     </main>
   );
 }
