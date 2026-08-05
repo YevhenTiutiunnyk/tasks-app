@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { ClarifyDialog, type ClarifyItem } from '@/components/ClarifyDialog';
 import { CommandBar, type CommandResponse } from '@/components/CommandBar';
 import { DayFeed } from '@/components/DayFeed';
+import { TaskCard } from '@/components/TaskCard';
 import { UndoToast } from '@/components/UndoToast';
 import { WeekGrid } from '@/components/WeekGrid';
 import { addDays } from '@/lib/dates';
@@ -27,6 +28,7 @@ export default function Home() {
   const [wide, setWide] = useState(true);
   const [undo, setUndo] = useState<{ batchId: string; message: string } | null>(null);
   const [clarify, setClarify] = useState<ClarifyItem[]>([]);
+  const [selected, setSelected] = useState<Task | null>(null);
 
   function handleResult(response: CommandResponse) {
     // /api/command всегда отвечает неделей вокруг today. Если пользователь листнул
@@ -90,7 +92,7 @@ export default function Home() {
           tasks={week.tasks}
           settings={week.settings}
           today={todayIso()}
-          onSelect={(task) => console.log('выбрана задача', task)}
+          onSelect={setSelected}
         />
       ) : (
         <DayFeed
@@ -99,7 +101,7 @@ export default function Home() {
           tasks={week.tasks}
           settings={week.settings}
           today={todayIso()}
-          onSelect={(task) => console.log('выбрана задача', task)}
+          onSelect={setSelected}
         />
       )}
 
@@ -119,6 +121,21 @@ export default function Home() {
             setClarify(remaining);
           }}
           onLater={() => setClarify([])}
+        />
+      )}
+      {selected && (
+        <TaskCard
+          task={selected}
+          settings={week.settings}
+          today={todayIso()}
+          onSaved={(updated) => {
+            // PATCH и DELETE /api/task тоже отвечают неделей вокруг today —
+            // сдвигаем anchor так же, как в handleResult, runUndo и onDone
+            // окна уточнения, иначе заголовок разойдётся со стрелками.
+            setAnchor(todayIso());
+            setWeek(updated as WeekData);
+          }}
+          onClose={() => setSelected(null)}
         />
       )}
       <CommandBar today={todayIso()} onResult={handleResult} />
