@@ -2,6 +2,7 @@
 
 import { eachDay, weekdayOf } from '@/lib/dates';
 import { formatDayLabel, minutesToClock } from '@/lib/format';
+import { visibleHourRange } from '@/lib/grid';
 import type { Settings, Task } from '@/lib/types';
 
 const HOUR_HEIGHT = 44;   // пикселей на час
@@ -22,9 +23,8 @@ function colorOf(task: Task, settings: Settings): string {
 export function WeekGrid({ from, to, tasks, settings, today, onSelect }: Props) {
   const days = eachDay(from, to);
 
-  // Показываем на два часа шире рабочего дня, но не выходя за сутки.
-  const firstHour = Math.max(0, Math.floor(settings.workStartMinute / 60) - 2);
-  const lastHour = Math.min(24, Math.ceil(settings.workEndMinute / 60) + 2);
+  // Рабочий день плюс два часа с каждой стороны, растянутый под реальные задачи недели.
+  const { firstHour, lastHour } = visibleHourRange(tasks, settings);
   const hours = Array.from({ length: lastHour - firstHour }, (_, i) => firstHour + i);
   const gridHeight = hours.length * HOUR_HEIGHT;
 
