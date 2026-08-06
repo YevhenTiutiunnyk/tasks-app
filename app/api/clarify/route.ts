@@ -14,9 +14,11 @@ export async function POST(request: Request) {
   if (!body) return badRequest('Не удалось разобрать тело запроса');
   const { answers, today } = body;
 
-  if (!answers?.length) return badRequest('Нечего уточнять');
+  // Именно массив: у строки тоже есть length, и {"answers":"abc"} проезжал
+  // проверку насквозь, чтобы упасть на answers.some с ответом 500.
+  if (!Array.isArray(answers) || answers.length === 0) return badRequest('Нечего уточнять');
   if (!today || !isValidIsoDate(today)) return badRequest('Некорректная дата');
-  if (answers.some((a) => !isValidTaskId(a.taskId) || typeof a.text !== 'string')) {
+  if (answers.some((a) => !a || !isValidTaskId(a.taskId) || typeof a.text !== 'string')) {
     return badRequest('Некорректный ответ на уточнение');
   }
 

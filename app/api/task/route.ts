@@ -89,7 +89,24 @@ export async function PATCH(request: Request) {
     return respond(body.today, null);
   }
 
-  // Правка всей серии меняет само правило.
+  // Название проверяем до ветки серии: иначе title "   " записался бы прямо
+  // в правило повтора. Карточка так не пошлёт, но ручной ввод здесь не
+  // доверенней вывода модели.
+  // При replace название обязательно: там null и пропуск значат «очистить»,
+  // то есть затёрли бы его в базе. Без replace оно необязательно, но если
+  // прислано — должно быть годным: apply применяет любую непустую по типу
+  // строку, включая пробельную. Отметка «выполнено» тела с title не шлёт
+  // и разобрана выше, до сюда не доходит.
+  const replace = body.replace === true;
+  if ((replace || body.title !== undefined)
+      && (typeof body.title !== 'string' || !body.title.trim())) {
+    return badRequest('Пустое название');
+  }
+
+  // Правка всей серии меняет само правило. Ветка работает по частичной
+  // семантике независимо от флага replace: у правила повтора нет колонки
+  // date, поэтому полная замена здесь неприменима — названные поля меняются,
+  // остальные остаются как были.
   const occurrence = parseOccurrenceId(body.taskId);
   if (body.scope === 'series' && occurrence) {
     const patch: Record<string, unknown> = {};
@@ -104,21 +121,9 @@ export async function PATCH(request: Request) {
     return respond(body.today, null);
   }
 
-  // Карточка задачи присылает все поля разом и просит полную замену (replace:
-  // true) — тогда название обязательно, иначе с replace пустое или
-  // отсутствующее затёрло бы его в базе. Перетаскивание знает только дату и
-  // время и флаг не ставит, поэтому его сюда не пускаем.
-  const replace = body.replace === true;
-  if (replace && (typeof body.title !== 'string' || !body.title.trim())) {
-    return badRequest('Пустое название');
-  }
-  // Без replace название необязательно, но если прислано — должно быть годным:
-  // apply применяет любую непустую по типу строку, включая пробельную.
-  if (!replace && body.title !== undefined
-      && (typeof body.title !== 'string' || !body.title.trim())) {
-    return badRequest('Пустое название');
-  }
-
+  // Карточка задачи присылает все поля разом и просит полную замену
+  // (replace: true). Перетаскивание знает только дату и время и флаг не
+  // ставит, поэтому его сюда не пускаем.
   // При replace null значит «очистить», а не «поле не названо».
   const operation: Operation = {
     type: 'update',
