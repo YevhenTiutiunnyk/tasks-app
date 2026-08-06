@@ -112,6 +112,12 @@ export async function PATCH(request: Request) {
   if (replace && (typeof body.title !== 'string' || !body.title.trim())) {
     return badRequest('Пустое название');
   }
+  // Без replace название необязательно, но если прислано — должно быть годным:
+  // apply применяет любую непустую по типу строку, включая пробельную.
+  if (!replace && body.title !== undefined
+      && (typeof body.title !== 'string' || !body.title.trim())) {
+    return badRequest('Пустое название');
+  }
 
   // При replace null значит «очистить», а не «поле не названо».
   const operation: Operation = {

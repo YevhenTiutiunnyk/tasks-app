@@ -117,6 +117,9 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                   <button
                     key={task.id}
                     onPointerDown={(event) => {
+                      // Правая кнопка не должна начинать перенос: иначе контекстное меню
+                      // приходит вместе с захватом указателя и мигающей полупрозрачностью.
+                      if (event.pointerType === 'mouse' && event.button !== 0) return;
                       // Долгое нажатие на телефоне, обычное нажатие мышью.
                       const target = event.currentTarget;
                       const offset = event.clientY - target.getBoundingClientRect().top;
@@ -128,16 +131,23 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                       if (event.pointerType === 'mouse') begin();
                       else {
                         const timer = setTimeout(begin, 350);
-                        target.addEventListener('pointerup', () => clearTimeout(timer), { once: true });
-                        target.addEventListener('pointercancel', () => clearTimeout(timer), { once: true });
+                        // Сработает ровно один из двух, поэтому снимаем оба разом — иначе
+                        // на узле кнопки копились бы осиротевшие слушатели, по одному
+                        // на каждое касание.
+                        const stop = new AbortController();
+                        const cancel = () => { clearTimeout(timer); stop.abort(); };
+                        target.addEventListener('pointerup', cancel, { signal: stop.signal });
+                        target.addEventListener('pointercancel', cancel, { signal: stop.signal });
                       }
                     }}
                     onPointerUp={(event) => {
-                      const start = pressStart.current;
+                      const origin = pressStart.current;
                       pressStart.current = null;
                       // Мышью dragging выставляется сразу на нажатие, поэтому одного его мало:
                       // отличаем клик от переноса по тому, сдвинулся ли указатель.
-                      const moved = start ? Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4 : false;
+                      const moved = origin
+                        ? Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 4
+                        : false;
                       if (dragging?.taskId !== task.id || !moved) {
                         setDragging(null);
                         onSelect(task);
@@ -154,6 +164,19 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                       const snapped = Math.round(rawMinute / 15) * 15;   // шаг 15 минут
                       const clamped = Math.max(0, Math.min(1439, snapped));
                       onMove(task.id, column.dataset.day!, clamped);
+                    }}
+                    onPointerCancel={() => {
+                      // Без этого отменённый жест оставляет задачу навсегда полупрозрачной,
+                      // а dragging — выставленным: следующий быстрый свайп по той же задаче
+                      // проехал бы проверку и перенёс её со старым grabOffset.
+                      pressStart.current = null;
+                      setDragging(null);
+                    }}
+                    onClick={(event) => {
+                      // Enter и пробел на кнопке дают click, но не pointerup, поэтому без
+                      // этого карточка перестала бы открываться с клавиатуры. detail === 0
+                      // бывает только у клика, синтезированного с клавиатуры.
+                      if (event.detail === 0) onSelect(task);
                     }}
                     style={{
                       top,
