@@ -1,36 +1,87 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Расписание
 
-## Getting Started
+Личное недельное расписание на одного человека. Задачи не вводятся по полям:
+пользователь надиктовывает фразу в строку ввода внизу экрана, фраза уходит на
+сервер, Claude превращает её в конкретные операции над расписанием, операции
+применяются к базе одной транзакцией, экран обновляется.
 
-First, run the development server:
+На широком экране — недельная сетка с часовой линейкой, на узком — лента дней.
+Задачи можно править в карточке и перетаскивать мышью; последнюю пачку изменений
+можно откатить.
+
+## Локальный запуск
+
+1. `npm install`
+2. Скопировать `.env.local.example` в `.env.local` и заполнить (см. таблицу ниже).
+3. Применить `supabase/migrations/0001_init.sql` в SQL-редакторе Supabase.
+4. `npm run dev`
+
+## Переменные окружения
+
+| Переменная | Что это |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Ключ с console.anthropic.com |
+| `APP_PASSWORD` | Пароль на входе в приложение |
+| `SESSION_SECRET` | Случайная строка от 32 символов для подписи куки |
+| `DATABASE_URL` | Транзакционный пулер Supabase, порт **6543** |
+
+Ни одна из них не попадает в репозиторий и ни одна не используется в клиентских
+компонентах.
+
+## Тесты
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npx vitest run                                                   # без базы: тесты, ходящие в неё, пропускаются
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # всё: 79 passed, 7 skipped
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Отдельно — семь живых примеров разбора фраз. Они обращаются к настоящему API,
+**стоят денег** и идут около трёх минут, поэтому по умолчанию пропускаются:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+RUN_LLM_TESTS=1 node --env-file=.env.local ./node_modules/vitest/vitest.mjs run lib/parse.examples.test.ts
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Отказ с кодом 529 — перегрузка API, а не дефект: перезапустить.
 
-## Learn More
+Перед выкладкой:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npx tsc --noEmit && npx eslint . && npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Как это устроено
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Слой | Где |
+| --- | --- |
+| Арифметика дат, раскрытие повторов | `lib/dates.ts`, `lib/recurrence.ts` |
+| Схема ответа модели и отбраковка негодных операций | `lib/schema.ts`, `lib/validate.ts` |
+| Применение пачки и откат, одна транзакция | `lib/apply.ts` |
+| Обращения к Anthropic | `lib/parse.ts`, `lib/parse-clarify.ts` |
+| Доступ к базе | `lib/db.ts`, `lib/week.ts` |
+| Роуты | `app/api/*` |
+| Экран | `app/page.tsx`, `components/*` |
 
-## Deploy on Vercel
+Данные хранятся как строки `'YYYY-MM-DD'` и минуты от полуночи, без объектов
+`Date` — чтобы перевод часов и часовые пояса не сдвигали задачи на соседний день.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Data API в Supabase выключен намеренно: приложение ходит напрямую по
+Postgres-протоколу ради настоящих транзакций, которых `supabase-js` не умеет.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Выкладка на Vercel
+
+```bash
+npm install -g vercel
+vercel
+```
+
+Затем в панели Vercel → Settings → Environment Variables добавить все четыре
+переменные из таблицы выше для окружения Production и выложить:
+
+```bash
+vercel --prod
+```
+
+Счётчик попыток входа живёт в памяти процесса: на нескольких экземплярах Vercel
+каждый даёт свои десять попыток. Защита держится на длине пароля — выбирайте
+длинный.
