@@ -114,7 +114,8 @@ export default function Home() {
         <button onClick={() => setAnchor(addDays(anchor, -7))} className="rounded px-2 py-1 hover:bg-neutral-500/10">←</button>
         <button onClick={() => setAnchor(todayIso())} className="rounded px-2 py-1 text-sm hover:bg-neutral-500/10">Сегодня</button>
         <button onClick={() => setAnchor(addDays(anchor, 7))} className="rounded px-2 py-1 hover:bg-neutral-500/10">→</button>
-        <span className="ml-auto text-sm opacity-60">{week.from} — {week.to}</span>
+        <span className="ml-auto mr-2 text-sm opacity-60">{week.from} — {week.to}</span>
+        <a href="/settings" className="rounded px-2 py-1 text-sm opacity-60 hover:bg-neutral-500/10">Настройки</a>
       </header>
 
       {wide ? (

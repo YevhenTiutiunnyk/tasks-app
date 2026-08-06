@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSettings, saveSettings } from '@/lib/db';
+import { badRequest, readJson } from '@/lib/http';
 import type { Settings } from '@/lib/types';
 
 export async function GET() {
@@ -7,7 +8,8 @@ export async function GET() {
 }
 
 export async function PUT(request: Request) {
-  const body = (await request.json()) as Settings;
+  const body = await readJson<Settings>(request);
+  if (!body) return badRequest('Не удалось разобрать тело запроса');
 
   const inRange = (m: number) => Number.isInteger(m) && m >= 0 && m <= 1439;
   if (!inRange(body.workStartMinute) || !inRange(body.workEndMinute)) {
