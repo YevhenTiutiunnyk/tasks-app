@@ -26,9 +26,17 @@ function check(operation: Operation, context: ValidationContext): string | null 
   const knownCategories = new Set(context.categories.map((c) => c.id));
 
   if (operation.type !== 'create') {
-    // Ссылка на вхождение серии допустима: задачи в базе ещё нет, её материализуют при применении.
-    const isOccurrence = operation.taskId.startsWith('occ:');
-    if (!isOccurrence && !knownIds.has(operation.taskId)) {
+    // Ссылка на вхождение серии допустима: задачи в базе ещё нет, её материализуют
+    // при применении — поэтому в knownIds её искать бесполезно. Но сам
+    // идентификатор обязан быть годным: с обрезанным или выдуманным uuid apply
+    // уйдёт в where recurrence_id = '<мусор>', Postgres упадёт на приведении
+    // к uuid, транзакция откатится целиком, и из-за одной операции пропадёт
+    // вся фраза. Ровно для этого слой проверки и существует.
+    const isOccurrence = parseOccurrenceId(operation.taskId) !== null;
+    if (
+      !isValidTaskId(operation.taskId) ||
+      (!isOccurrence && !knownIds.has(operation.taskId))
+    ) {
       return 'не нашёл такую задачу в расписании';
     }
   }
@@ -40,6 +48,13 @@ function check(operation: Operation, context: ValidationContext): string | null 
   }
   if (operation.type === 'update' && operation.title !== null && operation.title.trim() === '') {
     return 'пустое название';
+  }
+
+  // У задачи в базе колонка date объявлена not null, а у правила повтора её
+  // нет вовсе. Значит create без даты годится, только если это повтор: иначе
+  // вставка упадёт на not null и утащит за собой всю пачку.
+  if (operation.type === 'create' && operation.date === null && operation.recurrence === null) {
+    return 'не понял, на какой день ставить';
   }
 
   if (operation.date !== null && !isValidIsoDate(operation.date)) {

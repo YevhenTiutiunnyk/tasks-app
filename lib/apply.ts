@@ -15,13 +15,19 @@ async function materializeOccurrence(
   tx: TransactionSql,
   recurrenceId: string,
   date: string,
-): Promise<Task> {
+): Promise<{ task: Task; exceptionCreated: boolean }> {
   const [rule] = await tx`select * from recurrences where id = ${recurrenceId}`;
   if (!rule) throw new Error(`Правило повтора ${recurrenceId} не найдено`);
 
-  await tx`
+  // returning отдаёт строку только если вставка действительно случилась.
+  // Исключение могло существовать и до этой пачки — так бывает, когда
+  // вхождение уже вычёркивали. Записать его в снимок безусловно значило бы
+  // при откате удалить чужое исключение, и вычеркнутое занятие вернулось бы
+  // в календарь само собой.
+  const [exception] = await tx`
     insert into recurrence_exceptions (recurrence_id, date) values (${recurrenceId}, ${date})
     on conflict do nothing
+    returning recurrence_id
   `;
   const [row] = await tx`
     insert into tasks (title, date, start_minute, duration_minutes, all_day, category_id,
@@ -30,7 +36,7 @@ async function materializeOccurrence(
             ${rule.all_day}, ${rule.category_id}, ${recurrenceId}, ${date})
     returning *
   `;
-  return rowToTask(row);
+  return { task: rowToTask(row), exceptionCreated: exception !== undefined };
 }
 
 /**
@@ -85,10 +91,13 @@ export async function applyOperations(
           taskId = existing.id;
           snapshot.tasks.push({ id: taskId, before: rowToTask(existing) });
         } else {
-          const created = await materializeOccurrence(tx, occurrence.recurrenceId, occurrence.date);
+          const { task: created, exceptionCreated } =
+            await materializeOccurrence(tx, occurrence.recurrenceId, occurrence.date);
           taskId = created.id;
           snapshot.tasks.push({ id: created.id, before: null });
-          snapshot.exceptions.push({ recurrenceId: occurrence.recurrenceId, date: occurrence.date });
+          if (exceptionCreated) {
+            snapshot.exceptions.push({ recurrenceId: occurrence.recurrenceId, date: occurrence.date });
+          }
         }
       } else {
         const [row] = await tx`select * from tasks where id = ${taskId}`;

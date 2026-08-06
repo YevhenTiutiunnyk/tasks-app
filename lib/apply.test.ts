@@ -188,6 +188,42 @@ run('applyOperations', () => {
     expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
   });
 
+  it('не кладёт в снимок исключение, которого пачка не создавала', async () => {
+    await clean();
+    await applyOperations('каждый вторник в 8 зал', [
+      {
+        type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
+        allDay: false, categoryId: null,
+        recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+      },
+    ]);
+    const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
+    const occurrence = `occ:${rule.id}:2030-01-08`;
+
+    // Первая пачка вычеркнула вхождение: исключение появилось, задачи не осталось.
+    await applyOperations('убери зал во вторник', [{ type: 'delete', taskId: occurrence }]);
+    expect(
+      await sql`select * from recurrence_exceptions where recurrence_id = ${rule.id}`,
+    ).toHaveLength(1);
+
+    // Вторая пачка снова материализует то же вхождение. Исключение уже есть,
+    // insert ... on conflict do nothing ничего не вставляет — значит эта пачка
+    // исключения не создавала и в снимок класть его нечего.
+    const { batchId } = await applyOperations('переименуй зал во вторник', [
+      {
+        type: 'update', taskId: occurrence, title: 'Бассейн', date: null,
+        startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+      },
+    ]);
+    expect(await undoBatch(batchId)).toBe(true);
+
+    // Иначе откат снял бы чужое исключение и вычеркнутое занятие вернулось бы
+    // в календарь само собой.
+    const exceptions = await sql`select * from recurrence_exceptions where recurrence_id = ${rule.id}`;
+    expect(exceptions).toHaveLength(1);
+    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+  });
+
   it('не оставляет следов, если операция посреди пачки упала', async () => {
     await clean();
     await expect(

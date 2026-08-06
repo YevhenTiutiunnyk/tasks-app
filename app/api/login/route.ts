@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { signSession } from '@/lib/auth';
+import { SESSION_MAX_AGE_SECONDS, signSession } from '@/lib/auth';
+import { badRequest, readJson } from '@/lib/http';
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -20,7 +21,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Слишком много попыток. Подожди минуту.' }, { status: 429 });
   }
 
-  const { password } = (await request.json()) as { password?: string };
+  // Как и в остальных роутах: битое тело — это 400, а не необработанное
+  // исключение с ответом 500.
+  const body = await readJson<{ password?: string }>(request);
+  if (!body) return badRequest('Не удалось разобрать тело запроса');
+
+  const { password } = body;
   if (!password || password !== process.env.APP_PASSWORD) {
     return NextResponse.json({ error: 'Неверный пароль' }, { status: 401 });
   }
@@ -32,7 +38,7 @@ export async function POST(request: Request) {
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    maxAge: 60 * 60 * 24 * 365,
+    maxAge: SESSION_MAX_AGE_SECONDS,
   });
   return response;
 }
