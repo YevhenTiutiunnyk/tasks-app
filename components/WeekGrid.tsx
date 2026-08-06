@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef, useState } from 'react';
 import { eachDay, weekdayOf } from '@/lib/dates';
 import { formatDayLabel, minutesToClock } from '@/lib/format';
 import { visibleHourRange } from '@/lib/grid';
@@ -14,14 +15,21 @@ interface Props {
   settings: Settings;
   today: string;
   onSelect: (task: Task) => void;
+  onMove: (taskId: string, date: string, startMinute: number) => void;
 }
 
 function colorOf(task: Task, settings: Settings): string {
   return settings.categories.find((c) => c.id === task.categoryId)?.color ?? '#64748b';
 }
 
-export function WeekGrid({ from, to, tasks, settings, today, onSelect }: Props) {
+export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }: Props) {
   const days = eachDay(from, to);
+
+  const [dragging, setDragging] = useState<{ taskId: string; grabOffset: number } | null>(null);
+  // Откуда начали жать. Без этого обычный клик мышью неотличим от переноса:
+  // begin() выставляет dragging прямо на pointerdown, и pointerup считает
+  // каждый клик перетаскиванием — карточка не открылась бы никогда.
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
 
   // Рабочий день плюс два часа с каждой стороны, растянутый под реальные задачи недели.
   const { firstHour, lastHour } = visibleHourRange(tasks, settings);
@@ -92,7 +100,7 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect }: Props) 
           </div>
 
           {days.map((day) => (
-            <div key={day} className="relative border-l border-neutral-500/15">
+            <div key={day} data-day={day} className="relative border-l border-neutral-500/15">
               {hours.map((hour, index) => (
                 <div
                   key={hour}
@@ -108,12 +116,52 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect }: Props) 
                 return (
                   <button
                     key={task.id}
-                    onClick={() => onSelect(task)}
+                    onPointerDown={(event) => {
+                      // Долгое нажатие на телефоне, обычное нажатие мышью.
+                      const target = event.currentTarget;
+                      const offset = event.clientY - target.getBoundingClientRect().top;
+                      pressStart.current = { x: event.clientX, y: event.clientY };
+                      const begin = () => {
+                        target.setPointerCapture(event.pointerId);
+                        setDragging({ taskId: task.id, grabOffset: offset });
+                      };
+                      if (event.pointerType === 'mouse') begin();
+                      else {
+                        const timer = setTimeout(begin, 350);
+                        target.addEventListener('pointerup', () => clearTimeout(timer), { once: true });
+                        target.addEventListener('pointercancel', () => clearTimeout(timer), { once: true });
+                      }
+                    }}
+                    onPointerUp={(event) => {
+                      const start = pressStart.current;
+                      pressStart.current = null;
+                      // Мышью dragging выставляется сразу на нажатие, поэтому одного его мало:
+                      // отличаем клик от переноса по тому, сдвинулся ли указатель.
+                      const moved = start ? Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4 : false;
+                      if (dragging?.taskId !== task.id || !moved) {
+                        setDragging(null);
+                        onSelect(task);
+                        return;
+                      }
+                      setDragging(null);
+                      const column = document
+                        .elementsFromPoint(event.clientX, event.clientY)
+                        .find((el) => el instanceof HTMLElement && el.dataset.day) as HTMLElement | undefined;
+                      if (!column) return;
+                      const rect = column.getBoundingClientRect();
+                      const rawMinute =
+                        firstHour * 60 + ((event.clientY - dragging.grabOffset - rect.top) / HOUR_HEIGHT) * 60;
+                      const snapped = Math.round(rawMinute / 15) * 15;   // шаг 15 минут
+                      const clamped = Math.max(0, Math.min(1439, snapped));
+                      onMove(task.id, column.dataset.day!, clamped);
+                    }}
                     style={{
                       top,
                       height,
                       borderLeftColor: colorOf(task, settings),
                       backgroundColor: `${colorOf(task, settings)}26`,
+                      opacity: dragging?.taskId === task.id ? 0.5 : undefined,
+                      touchAction: 'none',
                     }}
                     className={`absolute inset-x-1 overflow-hidden rounded border-l-2 px-1.5 py-0.5 text-left text-[11px] leading-tight ${
                       task.done ? 'line-through opacity-50' : ''

@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { ClarifyDialog, type ClarifyItem } from '@/components/ClarifyDialog';
 import { CommandBar, type CommandResponse } from '@/components/CommandBar';
@@ -23,12 +24,14 @@ function todayIso(): string {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [anchor, setAnchor] = useState(todayIso);
   const [week, setWeek] = useState<WeekData | null>(null);
   const [wide, setWide] = useState(true);
   const [undo, setUndo] = useState<{ batchId: string; message: string } | null>(null);
   const [clarify, setClarify] = useState<ClarifyItem[]>([]);
   const [selected, setSelected] = useState<Task | null>(null);
+  const [moveError, setMoveError] = useState('');
 
   function handleResult(response: CommandResponse) {
     // /api/command всегда отвечает неделей вокруг today. Если пользователь листнул
@@ -56,6 +59,35 @@ export default function Home() {
       setWeek((await response.json()).week);
     }
     setUndo(null);
+  }
+
+  // Тело без replace: меняем только день и время, остальные поля не трогаем.
+  // Поставить здесь replace значило бы затереть название, длительность
+  // и категорию, потому что перетаскивание их не знает.
+  async function moveTask(taskId: string, date: string, startMinute: number) {
+    setMoveError('');
+    try {
+      const response = await fetch('/api/task', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ today: todayIso(), taskId, date, startMinute, scope: 'one' }),
+      });
+      if (response.status === 401) {
+        router.push('/login');
+        return;
+      }
+      if (!response.ok) {
+        // Без сообщения задача просто отскочит на прежнее место, и человек
+        // решит, что перетаскивание сломано.
+        const payload = await response.json().catch(() => ({}));
+        setMoveError(payload.error ?? 'Не получилось перенести задачу');
+        return;
+      }
+      setAnchor(todayIso());
+      setWeek((await response.json()).week);
+    } catch {
+      setMoveError('Нет связи с сервером');
+    }
   }
 
   useEffect(() => {
@@ -93,6 +125,7 @@ export default function Home() {
           settings={week.settings}
           today={todayIso()}
           onSelect={setSelected}
+          onMove={(id, date, minute) => void moveTask(id, date, minute)}
         />
       ) : (
         <DayFeed
@@ -137,6 +170,14 @@ export default function Home() {
           }}
           onClose={() => setSelected(null)}
         />
+      )}
+      {moveError && (
+        <button
+          onClick={() => setMoveError('')}
+          className="fixed inset-x-0 bottom-20 z-10 mx-auto block w-fit rounded-lg bg-red-600 px-4 py-2.5 text-sm text-white shadow-lg"
+        >
+          {moveError}
+        </button>
       )}
       <CommandBar today={todayIso()} onResult={handleResult} />
     </main>

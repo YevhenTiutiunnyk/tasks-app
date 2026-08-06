@@ -52,7 +52,7 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
       }
       Object.assign(body, {
         title: title.trim(), date, startMinute, durationMinutes, allDay,
-        categoryId: categoryId || null,
+        categoryId: categoryId || null, replace: true,
       });
     }
 

@@ -67,6 +67,7 @@ export async function PATCH(request: Request) {
     allDay?: boolean | null;
     categoryId?: string | null;
     done?: boolean;
+    replace?: boolean;
   }>(request);
   if (!body) return badRequest('Не удалось разобрать тело запроса');
 
@@ -103,20 +104,21 @@ export async function PATCH(request: Request) {
     return respond(body.today, null);
   }
 
-  // На этом пути правка всегда приходит из карточки задачи и несёт весь набор
-  // полей, поэтому название обязательно: с replace пустое или отсутствующее
-  // затёрло бы его в базе.
-  if (typeof body.title !== 'string' || !body.title.trim()) {
+  // Карточка задачи присылает все поля разом и просит полную замену (replace:
+  // true) — тогда название обязательно, иначе с replace пустое или
+  // отсутствующее затёрло бы его в базе. Перетаскивание знает только дату и
+  // время и флаг не ставит, поэтому его сюда не пускаем.
+  const replace = body.replace === true;
+  if (replace && (typeof body.title !== 'string' || !body.title.trim())) {
     return badRequest('Пустое название');
   }
 
-  // Правка из карточки присылает все поля разом, поэтому это полная замена:
-  // здесь null значит «очистить», а не «модель про поле не сказала».
+  // При replace null значит «очистить», а не «поле не названо».
   const operation: Operation = {
     type: 'update',
-    replace: true,
+    replace,
     taskId: body.taskId,
-    title: body.title,
+    title: body.title ?? null,
     date: body.date ?? null,
     startMinute: body.startMinute ?? null,
     durationMinutes: body.durationMinutes ?? null,
