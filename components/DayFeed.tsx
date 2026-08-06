@@ -1,7 +1,7 @@
 'use client';
 
 import { eachDay, weekdayOf } from '@/lib/dates';
-import { formatDayHeading, minutesToClock } from '@/lib/format';
+import { formatDayHeading, formatTimeRange } from '@/lib/format';
 import type { Settings, Task } from '@/lib/types';
 
 interface Props {
@@ -47,8 +47,10 @@ export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
                           task.done ? 'line-through opacity-50' : ''
                         }`}
                       >
-                        <span className="min-w-[52px] text-xs tabular-nums opacity-70">
-                          {task.allDay ? 'весь день' : minutesToClock(task.startMinute ?? 0)}
+                        <span className="min-w-[92px] shrink-0 whitespace-nowrap text-xs tabular-nums opacity-70">
+                          {task.allDay
+                            ? 'весь день'
+                            : formatTimeRange(task.startMinute ?? 0, task.durationMinutes)}
                         </span>
                         <span className="text-sm">{task.title}</span>
                       </button>

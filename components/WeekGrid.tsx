@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { eachDay, weekdayOf } from '@/lib/dates';
-import { formatDayLabel, minutesToClock } from '@/lib/format';
+import { formatDayLabel, formatTimeRange, minutesToClock } from '@/lib/format';
 import { visibleHourRange } from '@/lib/grid';
 import type { Settings, Task } from '@/lib/types';
 
@@ -112,7 +112,11 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
               {timedByDate.get(day)!.map((task) => {
                 const start = task.startMinute ?? 0;
                 const top = ((start - firstHour * 60) / 60) * HOUR_HEIGHT;
-                const height = Math.max(18, ((task.durationMinutes ?? 60) / 60) * HOUR_HEIGHT - 2);
+                const full = Math.max(18, ((task.durationMinutes ?? 60) / 60) * HOUR_HEIGHT - 2);
+                // Задача, переходящая за полночь, иначе свесилась бы ниже сетки:
+                // верхняя граница диапазона упирается в 24:00 и дальше не растёт.
+                // Обрезаем блок по низу — настоящий конец всё равно написан на нём.
+                const height = Math.max(18, Math.min(full, gridHeight - top));
                 return (
                   <button
                     key={task.id}
@@ -191,7 +195,9 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                     }`}
                   >
                     <span className="block truncate font-medium">{task.title}</span>
-                    <span className="block text-[9px] opacity-70">{minutesToClock(start)}</span>
+                    <span className="block text-[9px] tabular-nums opacity-70">
+                      {formatTimeRange(start, task.durationMinutes)}
+                    </span>
                   </button>
                 );
               })}

@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { SeriesChoiceDialog } from './SeriesChoiceDialog';
-import { clockToMinutes, minutesToClock } from '@/lib/format';
+import { clockToMinutes, formatDuration, formatTimeRange, minutesToClock } from '@/lib/format';
 import type { Settings, Task } from '@/lib/types';
 
 interface Props {
@@ -31,6 +31,16 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
   const [pending, setPending] = useState<null | 'save' | 'delete'>(null);
 
   const isSeries = task.id.startsWith('occ:');
+
+  // «14:00–21:15 · 7 ч 15 мин» под полями ввода. Пустая строка, пока введённое
+  // не складывается во что-то осмысленное, — лучше промолчать, чем показать
+  // «NaN ч» на полуслове.
+  const hintStart = clockToMinutes(clock);
+  const hintDuration = Number(duration);
+  const hint =
+    hintStart === null || !Number.isFinite(hintDuration) || hintDuration <= 0
+      ? ''
+      : `${formatTimeRange(hintStart, hintDuration)} · ${formatDuration(hintDuration)}`;
 
   async function send(method: 'PATCH' | 'DELETE', scope?: 'one' | 'series') {
     if (busy) return;                          // защита от двойного клика
@@ -167,6 +177,11 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
               />
             </div>
           )}
+
+          {/* Поля хранят начало и минуты — так вводить точнее всего, — но по ним
+              не видно ни конца задачи, ни того, семь это часов или четыре.
+              Подсказка считается на лету и отвечает на оба вопроса. */}
+          {!allDay && hint && <p className="text-[11px] tabular-nums opacity-60">{hint}</p>}
 
           <select
             value={categoryId}

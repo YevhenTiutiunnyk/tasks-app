@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { clockToMinutes, formatDayLabel, minutesToClock } from './format';
+import {
+  clockToMinutes,
+  formatDayLabel,
+  formatDuration,
+  formatTimeRange,
+  minutesToClock,
+} from './format';
 
 describe('minutesToClock', () => {
   it('добивает нулями', () => expect(minutesToClock(540)).toBe('09:00'));
@@ -17,4 +23,27 @@ describe('clockToMinutes', () => {
 
 describe('formatDayLabel', () => {
   it('собирает подпись дня', () => expect(formatDayLabel('2026-08-04', 2)).toBe('вт 4 авг'));
+});
+
+describe('formatTimeRange', () => {
+  it('показывает начало и конец', () => expect(formatTimeRange(840, 435)).toBe('14:00–21:15'));
+  it('часовая задача', () => expect(formatTimeRange(600, 60)).toBe('10:00–11:00'));
+  it('переход через полночь показывает время следующих суток', () =>
+    expect(formatTimeRange(1410, 60)).toBe('23:30–00:30'));
+  it('конец ровно в полночь', () => expect(formatTimeRange(1380, 60)).toBe('23:00–00:00'));
+  it('без длительности показывает только начало', () =>
+    expect(formatTimeRange(840, null)).toBe('14:00'));
+  it('нулевая длительность показывает только начало', () =>
+    expect(formatTimeRange(840, 0)).toBe('14:00'));
+});
+
+describe('formatDuration', () => {
+  it('часы и минуты', () => expect(formatDuration(435)).toBe('7 ч 15 мин'));
+  it('целые часы без минут', () => expect(formatDuration(120)).toBe('2 ч'));
+  it('ровно час', () => expect(formatDuration(60)).toBe('1 ч'));
+  it('меньше часа — только минуты', () => expect(formatDuration(45)).toBe('45 мин'));
+  it('ноль', () => expect(formatDuration(0)).toBe('0 мин'));
+  it('сутки с лишним не сворачиваются в дни', () => expect(formatDuration(1500)).toBe('25 ч'));
+  it('мусор не притворяется длительностью', () => expect(formatDuration(NaN)).toBe(''));
+  it('отрицательное не притворяется длительностью', () => expect(formatDuration(-30)).toBe(''));
 });
