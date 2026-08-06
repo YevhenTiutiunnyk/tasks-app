@@ -2,7 +2,19 @@ import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
-  test: { environment: 'node', include: ['**/*.test.ts'] },
+  test: {
+    environment: 'node',
+    include: ['**/*.test.ts'],
+    // Тесты lib/db.test.ts и lib/apply.test.ts ходят в настоящий Supabase
+    // во Франкфурте: пятнадцать тестов applyOperations идут около сорока
+    // секунд, в среднем по три на тест, и каждый делает несколько запросов
+    // подряд внутри транзакции. Стандартных пяти секунд им хватало впритык,
+    // и самый тяжёлый из них периодически падал по таймауту — не по логике.
+    // Двадцать секунд дают запас на медленную сеть и при этом не прячут
+    // настоящее зависание. Тесты чистых функций от этого не замедляются:
+    // лимит — потолок, а не задержка.
+    testTimeout: 20000,
+  },
   resolve: {
     alias: {
       '@': import.meta.dirname,
