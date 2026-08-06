@@ -31,41 +31,70 @@ export default function Home() {
   const [undo, setUndo] = useState<{ batchId: string; message: string } | null>(null);
   const [clarify, setClarify] = useState<ClarifyItem[]>([]);
   const [selected, setSelected] = useState<Task | null>(null);
-  const [moveError, setMoveError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [reloadToken, setReloadToken] = useState(0);
+
+  // Все успешные ответы — команда, откат, уточнение, правка из карточки —
+  // приходят неделей вокруг today. Показать такую неделю, не сдвинув anchor,
+  // значит рассогласовать экран со стрелками: «←» отсчитает семь дней от
+  // устаревшего якоря. Заодно снимаем сообщение о неудачной загрузке: на
+  // экране снова свежая неделя с сервера.
+  function showWeek(data: unknown) {
+    setAnchor(todayIso());
+    setWeek(data as WeekData);
+    setLoadError('');
+  }
 
   function handleResult(response: CommandResponse) {
-    // /api/command всегда отвечает неделей вокруг today. Если пользователь листнул
-    // на другую неделю, показать её ответ, не сдвинув anchor, значит рассогласовать
-    // экран со стрелками: «←» отсчитает семь дней от устаревшего якоря.
-    setAnchor(todayIso());
-    setWeek(response.week as WeekData);
+    showWeek(response.week);
     if (response.batchId) {
       setUndo({ batchId: response.batchId, message: response.reply || 'Готово' });
+    } else {
+      // Иначе на экране осталась бы плашка от прошлой команды, и «Отменить»
+      // откатило бы не то, о чём человек только что говорил.
+      setUndo(null);
     }
     if (response.needsTime.length > 0) setClarify(response.needsTime);
   }
 
   async function runUndo() {
     if (!undo) return;
-    const response = await fetch('/api/undo', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ batchId: undo.batchId, today: todayIso() }),
-    });
-    // /api/undo, как и /api/command, отвечает неделей вокруг today — сдвигаем
-    // anchor симметрично handleResult, иначе заголовок разойдётся со стрелками.
-    if (response.ok) {
-      setAnchor(todayIso());
-      setWeek((await response.json()).week);
+    setActionError('');
+    try {
+      const response = await fetch('/api/undo', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ batchId: undo.batchId, today: todayIso() }),
+      });
+      if (response.status === 401) {
+        router.push('/login');
+        return;
+      }
+      if (!response.ok) {
+        setActionError('Не получилось отменить');
+        return;
+      }
+      const body = await response.json();
+      showWeek(body.week);
+      // Откатывается только самая свежая пачка. Пока плашка висела, человек мог
+      // перетащить задачу мышью — и его «Отменить» уже ничего не откатит.
+      // Без сообщения плашка просто исчезла бы, будто всё получилось.
+      if (body.undone === false) {
+        setActionError('Отменить не вышло: после этого уже были другие изменения');
+      }
+    } catch {
+      setActionError('Нет связи с сервером');
+    } finally {
+      setUndo(null);
     }
-    setUndo(null);
   }
 
   // Тело без replace: меняем только день и время, остальные поля не трогаем.
   // Поставить здесь replace значило бы затереть название, длительность
   // и категорию, потому что перетаскивание их не знает.
   async function moveTask(taskId: string, date: string, startMinute: number) {
-    setMoveError('');
+    setActionError('');
     try {
       const response = await fetch('/api/task', {
         method: 'PATCH',
@@ -80,13 +109,12 @@ export default function Home() {
         // Без сообщения задача просто отскочит на прежнее место, и человек
         // решит, что перетаскивание сломано.
         const payload = await response.json().catch(() => ({}));
-        setMoveError(payload.error ?? 'Не получилось перенести задачу');
+        setActionError(payload.error ?? 'Не получилось перенести задачу');
         return;
       }
-      setAnchor(todayIso());
-      setWeek((await response.json()).week);
+      showWeek((await response.json()).week);
     } catch {
-      setMoveError('Нет связи с сервером');
+      setActionError('Нет связи с сервером');
     }
   }
 
@@ -100,13 +128,36 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/week?date=${anchor}`).then(async (response) => {
-      if (response.ok && !cancelled) setWeek(await response.json());
-    });
+    void (async () => {
+      try {
+        const response = await fetch(`/api/week?date=${anchor}`);
+        // Без этих веток сбой загрузки не виден ничем: при 500 экран навсегда
+        // оставался на «Загружаю…», а при обрыве связи fetch отклонялся
+        // вообще без обработчика.
+        if (response.status === 401) {
+          router.push('/login');
+          return;
+        }
+        if (!response.ok) {
+          if (!cancelled) setLoadError('Не удалось загрузить неделю');
+          return;
+        }
+        const loaded = await response.json();
+        if (cancelled) return;
+        setLoadError('');
+        setWeek(loaded);
+      } catch {
+        if (!cancelled) setLoadError('Нет связи с сервером');
+      }
+    })();
     return () => { cancelled = true; };
-  }, [anchor]);
+  }, [anchor, reloadToken, router]);
 
-  if (!week) return <main className="p-6 text-sm opacity-60">Загружаю…</main>;
+  if (!week) {
+    return loadError
+      ? <main className="p-6 text-sm text-red-600">{loadError}</main>
+      : <main className="p-6 text-sm opacity-60">Загружаю…</main>;
+  }
 
   return (
     <main className="mx-auto max-w-6xl p-3 pb-28">
@@ -117,6 +168,18 @@ export default function Home() {
         <span className="ml-auto mr-2 text-sm opacity-60">{week.from} — {week.to}</span>
         <a href="/settings" className="rounded px-2 py-1 text-sm opacity-60 hover:bg-neutral-500/10">Настройки</a>
       </header>
+
+      {loadError && (
+        // Неделя на экране не та, что запрошена стрелками: anchor уже сдвинут,
+        // а week остался прежним. Молча показывать старую неделю под новым
+        // заголовком нельзя — стрелки будут выглядеть сломанными.
+        <p className="mb-2 flex items-center gap-3 rounded-md bg-red-600/10 px-3 py-2 text-xs text-red-600">
+          <span>{loadError}. На экране неделя {week.from} — {week.to}.</span>
+          <button onClick={() => setReloadToken((n) => n + 1)} className="font-semibold underline">
+            Повторить
+          </button>
+        </p>
+      )}
 
       {wide ? (
         <WeekGrid
@@ -147,11 +210,7 @@ export default function Home() {
           items={clarify}
           today={todayIso()}
           onDone={(week, remaining) => {
-            // /api/clarify тоже отвечает неделей вокруг today — сдвигаем anchor
-            // симметрично handleResult и runUndo, иначе заголовок разойдётся
-            // со стрелками.
-            setAnchor(todayIso());
-            setWeek(week as WeekData);
+            showWeek(week);
             setClarify(remaining);
           }}
           onLater={() => setClarify([])}
@@ -162,22 +221,22 @@ export default function Home() {
           task={selected}
           settings={week.settings}
           today={todayIso()}
-          onSaved={(updated) => {
-            // PATCH и DELETE /api/task тоже отвечают неделей вокруг today —
-            // сдвигаем anchor так же, как в handleResult, runUndo и onDone
-            // окна уточнения, иначе заголовок разойдётся со стрелками.
-            setAnchor(todayIso());
-            setWeek(updated as WeekData);
+          onSaved={(updated, batchId) => {
+            showWeek(updated);
+            // batchId приходит только от удаления. Правку откатывает повторная
+            // правка, а удалённую задачу вернуть больше нечем — поэтому
+            // плашка отмены нужна именно здесь.
+            if (batchId) setUndo({ batchId, message: 'Задача удалена' });
           }}
           onClose={() => setSelected(null)}
         />
       )}
-      {moveError && (
+      {actionError && (
         <button
-          onClick={() => setMoveError('')}
+          onClick={() => setActionError('')}
           className="fixed inset-x-0 bottom-20 z-10 mx-auto block w-fit rounded-lg bg-red-600 px-4 py-2.5 text-sm text-white shadow-lg"
         >
-          {moveError}
+          {actionError}
         </button>
       )}
       <CommandBar today={todayIso()} onResult={handleResult} />

@@ -10,7 +10,11 @@ interface Props {
   task: Task;
   settings: Settings;
   today: string;
-  onSaved: (week: unknown) => void;
+  /**
+   * batchId отдаём только у удаления: его пачку можно откатить плашкой,
+   * а правку откатывает повторная правка, и плашка там только мешала бы.
+   */
+  onSaved: (week: unknown, batchId?: string | null) => void;
   onClose: () => void;
 }
 
@@ -73,7 +77,9 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
         setPending(null);
         return;
       }
-      onSaved(payload.week);
+      // Удаление всей серии идёт мимо журнала и отвечает batchId: null —
+      // плашки не будет, и правильно: такой откат не предусмотрен.
+      onSaved(payload.week, method === 'DELETE' ? payload.batchId : null);
       onClose();
     } catch {
       // Без этого обрыв связи оставлял бы карточку молча висеть, а выбор

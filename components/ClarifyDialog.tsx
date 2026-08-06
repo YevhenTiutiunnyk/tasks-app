@@ -37,8 +37,17 @@ export function ClarifyDialog({ items, today, onDone, onLater }: Props) {
       .filter((item) => !allDay[item.taskId] && (values[item.taskId] ?? '').trim())
       .map((item) => ({ taskId: item.taskId, text: values[item.taskId] }));
 
+    // Пустая отправка бывает двух разных смыслов. Если по каждой задаче стоит
+    // тумблер «весь день» — человек выбрал осознанно, окно можно закрывать
+    // молча: задачи и так на весь день. А если что-то просто не заполнено,
+    // тихое закрытие выглядит как сработавшее «Готово», хотя не отправлено
+    // ничего и задачи молча остались на весь день.
     if (answers.length === 0) {
       setBusy(false);
+      if (items.some((item) => !allDay[item.taskId])) {
+        setError('Ничего не заполнено: впиши время или отметь «весь день». «Позже» закроет окно — задачи останутся на весь день.');
+        return;
+      }
       onLater();
       return;
     }

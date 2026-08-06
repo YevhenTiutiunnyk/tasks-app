@@ -28,6 +28,11 @@ export function CommandBar({ today, onResult }: Props) {
   // Операции, выброшенные проверкой. Показать их обязательно: ответ модели
   // о них не знает и бодро отрапортует об успехе, которого не было.
   const [rejected, setRejected] = useState<{ reason: string }[]>([]);
+  // Ответ модели, когда пачки не вышло. Промпт прямо велит ей в таком случае
+  // объяснить причину в reply («такой задачи нет»), а показать его больше
+  // негде: плашка отмены появляется только при непустом batchId, и rejected
+  // тут тоже пуст — отбраковывать было нечего.
+  const [notice, setNotice] = useState('');
 
   function update(value: string) {
     setText(value);
@@ -39,6 +44,7 @@ export function CommandBar({ today, onResult }: Props) {
     setBusy(true);
     setError('');
     setRejected([]);
+    setNotice('');
     try {
       const response = await fetch('/api/command', {
         method: 'POST',
@@ -60,6 +66,7 @@ export function CommandBar({ today, onResult }: Props) {
       }
       update('');
       setRejected(body.rejected ?? []);
+      if (!body.batchId) setNotice(body.reply ?? '');
       onResult(body as CommandResponse);
     } catch {
       setError('Нет связи с сервером');
@@ -93,6 +100,8 @@ export function CommandBar({ today, onResult }: Props) {
         </button>
       </div>
       {error && <p className="mx-auto mt-1.5 max-w-3xl text-xs text-red-600">{error}</p>}
+      {/* Не ошибка, а ответ на сказанное — поэтому нейтрально, а не красным. */}
+      {notice && <p className="mx-auto mt-1.5 max-w-3xl text-xs opacity-70">{notice}</p>}
       {rejected.length > 0 && (
         <ul className="mx-auto mt-1.5 max-w-3xl space-y-0.5 text-xs text-amber-600">
           {rejected.map((item, index) => (
