@@ -145,15 +145,3 @@ Deployed on Vercel. `vercel.json` pins functions to `fra1`, next to the database
 round trips, and crossing the Atlantic for each of them would add roughly a second
 for nothing.
 
----
-
-## How it was built
-
-`docs/` holds the specification and the implementation plan — sixteen tasks, each
-with the full code for every step. The work followed it: a fresh agent per task,
-a review between tasks, findings fixed before moving on.
-
-Twenty-six defects turned out to be in **the plan itself** rather than in the code,
-and nearly every one of them surfaced only when something actually ran.
-`handoff.md` and the commit history preserve that path in full — including the
-cases where a fix made "for one caller" broke a second one an hour later.

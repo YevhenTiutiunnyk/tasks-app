@@ -44,5 +44,13 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# superpowers (planning docs, not part of the app)
+# planning and working notes — kept locally, not part of the published app
 .superpowers/
+docs/superpowers/
+docs/prompt-for-new-chat.md
+handoff.md
+
+# local tooling config
+.claude/
+CLAUDE.md
+AGENTS.md
