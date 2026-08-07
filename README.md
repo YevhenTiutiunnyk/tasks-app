@@ -1,118 +1,128 @@
-# Расписание
+# Schedule
 
-Личное недельное расписание, в котором задачи не вводятся по полям. Пользователь
-надиктовывает фразу — «в среду в 10 врач», «каждый вторник в 8 зал», «перенеси
-спортзал на четверг» — Claude превращает её в конкретные операции над
-расписанием, операции применяются к базе одной транзакцией, экран обновляется.
+*[Русская версия](README.ru.md)*
 
-Приложение написано под один сценарий: достать телефон, продиктовать, убрать
-телефон. Отсюда и решения — от разбора фразы до того, что видно на блоке задачи.
+A personal weekly schedule where you never fill in a form. You dictate a phrase —
+*"doctor on Wednesday at 10"*, *"gym every Tuesday at 8"*, *"move the gym to
+Thursday"* — Claude turns it into concrete operations on the schedule, the
+operations are applied to the database in a single transaction, and the screen
+updates.
+
+The whole app is built around one moment: take out your phone, say the thing, put
+the phone away. That constraint drove every decision below, from how the model's
+output is treated to what a task block shows.
 
 Next.js 16 · TypeScript · Postgres (Supabase) · Anthropic API · Tailwind · Vitest
 
----
-
-## Что здесь может быть интересно
-
-**Модель не ходит в базу.** Между разбором фразы и записью стоит слой проверки
-(`lib/validate.ts`): он отбраковывает операции, ссылающиеся на несуществующие
-задачи, негодные даты, время вне суток, выдуманные категории. Вывод модели —
-такие же непроверенные данные, как ввод из формы, и обращается с ним код
-соответственно. Отбракованное не исчезает молча: причина показывается в
-интерфейсе, потому что сама модель о ней не знает и бодро отрапортует об успехе.
-
-**Пачка применяется целиком или никак.** `lib/apply.ts` открывает одну
-транзакцию на все операции фразы и попутно пишет слепок «как было». Отсюда
-кнопка «Отменить» на восемь секунд: откат восстанавливает состояние по слепку,
-а не пытается вычислить обратные операции. Обход слепка идёт в обратном
-порядке — иначе пачка, дважды тронувшая одну задачу, восстановилась бы
-в промежуточное состояние.
-
-**Даты — строки, время — минуты.** Ни одного объекта `Date` в бизнес-логике и в
-базе: `'2026-08-06'` и 840 минут от полуночи. Это снимает целый класс ошибок,
-где перевод часов или часовой пояс сервера сдвигают задачу на соседний день.
-
-**Повторы раскрываются чистой функцией.** `lib/recurrence.ts` превращает правило
-и список исключений в конкретные вхождения без единого обращения к базе, поэтому
-покрывается обычными тестами. Правка одного занятия материализует его в
-настоящую задачу и добавляет исключение — правило остаётся нетронутым.
-
-**Прямое подключение к Postgres вместо клиента Supabase.** Data API выключен
-намеренно: `supabase-js` не умеет настоящих транзакций, а без них откат
-превращается в набор запросов, каждый из которых может не долететь.
-
-**Структурированный вывод по схеме zod.** Схема ответа модели и валидатор
-живут отдельно (`lib/schema.ts`, `lib/validate.ts`); все поля обязательные и
-nullable, потому что структурированный вывод требует всех полей в `required`.
+> The interface and code comments are in Russian — it is a single-user app built
+> for its owner.
 
 ---
 
-## Как устроено
+## What might be worth a look
 
-| Слой | Файлы | Отвечает за |
+**The model never touches the database.** A validation layer sits between parsing
+and writing (`lib/validate.ts`). It rejects operations that reference tasks which
+do not exist, impossible dates, times outside the day, invented categories. Model
+output is untrusted input, exactly like a form submission, and the code treats it
+that way. Rejected operations don't vanish silently either: the reason is shown in
+the UI, because the model itself doesn't know about the rejection and will happily
+report success.
+
+**A batch applies completely or not at all.** `lib/apply.ts` opens one transaction
+for every operation in a phrase and records a "before" snapshot along the way.
+That is where the eight-second **Undo** comes from: the rollback restores state
+from the snapshot instead of trying to compute inverse operations. The snapshot is
+walked in reverse — otherwise a batch that touched the same task twice would
+restore it to an intermediate state rather than the original.
+
+**Dates are strings, time is minutes.** There is not a single `Date` object in the
+business logic or the database: `'2026-08-06'` and 840 minutes past midnight. This
+removes an entire class of bugs where a DST shift or the server's timezone moves a
+task to the neighbouring day.
+
+**Recurrence expansion is a pure function.** `lib/recurrence.ts` turns a rule plus
+a list of exceptions into concrete occurrences without touching the database, so
+it is covered by ordinary unit tests. Editing a single occurrence materializes it
+into a real task and adds an exception — the rule itself stays untouched.
+
+**Direct Postgres instead of the Supabase client.** The Data API is disabled on
+purpose: `supabase-js` cannot do real transactions, and without them a rollback
+degenerates into a sequence of individual requests, any of which may not land.
+
+**Structured outputs with a zod schema.** The model's response schema and the
+validator are deliberately separate (`lib/schema.ts`, `lib/validate.ts`). Every
+field is required and nullable, because structured outputs demand that every
+property appear in `required`.
+
+---
+
+## How it is put together
+
+| Layer | Files | Responsible for |
 | --- | --- | --- |
-| Арифметика дат | `lib/dates.ts` | Границы недели, дни, отбраковка несуществующих дат |
-| Повторы | `lib/recurrence.ts` | Правило + исключения → вхождения; чистая функция |
-| Схема и проверка | `lib/schema.ts`, `lib/validate.ts` | Форма ответа модели и отбраковка негодного |
-| Применение и откат | `lib/apply.ts` | Транзакция, слепок, откат пачки |
-| Обращения к модели | `lib/parse.ts`, `lib/parse-clarify.ts` | Единственные места, знающие про Anthropic |
-| Доступ к данным | `lib/db.ts`, `lib/week.ts` | Запросы и сборка недели |
-| HTTP | `app/api/*` | Шесть роутов: неделя, команда, уточнение, отмена, задачи, настройки |
-| Экран | `app/page.tsx`, `components/*` | Сетка, лента, карточка, строка ввода |
+| Date arithmetic | `lib/dates.ts` | Week boundaries, weekdays, rejecting impossible dates |
+| Recurrence | `lib/recurrence.ts` | Rule + exceptions → occurrences; pure function |
+| Schema & validation | `lib/schema.ts`, `lib/validate.ts` | Shape of the model's answer, rejection of bad operations |
+| Apply & undo | `lib/apply.ts` | Transaction, snapshot, batch rollback |
+| Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | The only places that know about Anthropic |
+| Data access | `lib/db.ts`, `lib/week.ts` | Queries and week assembly |
+| HTTP | `app/api/*` | Six routes: week, command, clarify, undo, tasks, settings |
+| UI | `app/page.tsx`, `components/*` | Grid, day feed, task card, command bar |
 
-Широкий экран показывает недельную сетку с часовой линейкой, узкий —
-ленту дней. Диапазон часов считается по рабочим часам и растягивается под
-реальные задачи недели, поэтому пробежка в шесть утра не рисуется поверх шапки.
+Wide screens get a week grid with an hour ruler; narrow ones get a day feed. The
+visible hour range is derived from working hours and then stretched to fit the
+week's actual tasks, so a 6 a.m. run is not drawn on top of the header.
 
-Когда модель поняла задачу, но не поняла когда — она создаёт её на весь день и
-возвращает вопрос. Окно уточнения принимает такой же надиктованный ответ:
-«завтра в 8 утра, час».
+When the model understands *what* but not *when*, it creates the task as all-day
+and returns a question. The clarification dialog accepts another dictated phrase:
+*"tomorrow at 8, one hour"*.
 
 ---
 
-## Тесты
+## Tests
 
 ```bash
-npx vitest run                                                   # без базы: тесты, ходящие в неё, пропускаются
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # всё: 101 проходит
+npx vitest run                                                   # no database: DB-backed tests skip
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 101 passing
 ```
 
-Тесты применения и отката работают против настоящего Postgres, а не против
-моков: проверяется состояние таблиц после транзакции и после отката. Отсюда и
-поднятый лимит на тест в `vitest.config.ts` — запросы идут по сети.
+The apply/undo tests run against a real Postgres rather than mocks: they assert on
+table contents after the transaction and after the rollback. That is also why the
+per-test timeout in `vitest.config.ts` is raised — those queries cross the network.
 
-Отдельно лежат семь живых примеров разбора фраз. Они обращаются к настоящему
-API, стоят денег и по умолчанию пропускаются:
+Seven live parsing examples are kept separate. They call the real API, cost money,
+and are skipped by default:
 
 ```bash
 RUN_LLM_TESTS=1 node --env-file=.env.local ./node_modules/vitest/vitest.mjs run lib/parse.examples.test.ts
 ```
 
-Именно они однажды показали, что промпт противоречит замыслу: правило запрещало
-создавать задачу без указания дня, а окно уточнения задумывалось ровно для
-этого случая.
+They are the reason a contradiction surfaced at all: a prompt rule forbade creating
+a task when no day was given, while the clarification dialog had been designed for
+exactly that case.
 
 ---
 
-## Локальный запуск
+## Running locally
 
 1. `npm install`
-2. Скопировать `.env.local.example` в `.env.local` и заполнить.
-3. Применить `supabase/migrations/0001_init.sql` в SQL-редакторе Supabase.
+2. Copy `.env.local.example` to `.env.local` and fill it in.
+3. Apply `supabase/migrations/0001_init.sql` in the Supabase SQL editor.
 4. `npm run dev`
 
-| Переменная | Что это |
+| Variable | What it is |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Ключ с console.anthropic.com |
-| `APP_PASSWORD` | Пароль на входе в приложение |
-| `SESSION_SECRET` | Случайная строка от 32 символов для подписи куки |
-| `DATABASE_URL` | Транзакционный пулер Supabase, порт **6543** |
+| `ANTHROPIC_API_KEY` | Key from console.anthropic.com |
+| `APP_PASSWORD` | Password for the app's single login |
+| `SESSION_SECRET` | Random string, 32+ characters, used to sign the cookie |
+| `DATABASE_URL` | Supabase **transaction pooler**, port **6543** |
 
-Порт важен: на прямом соединении (5432) serverless-функции исчерпают лимит
-подключений. По той же причине пул создаётся с `prepare: false` — транзакционный
-пулер не поддерживает подготовленные выражения.
+The port matters: on a direct connection (5432) serverless functions exhaust the
+connection limit. For the same reason the pool is created with `prepare: false` —
+the transaction pooler does not support prepared statements.
 
-Перед выкладкой:
+Before shipping:
 
 ```bash
 npx tsc --noEmit && npx eslint . && npm run build
@@ -120,21 +130,22 @@ npx tsc --noEmit && npx eslint . && npm run build
 
 ---
 
-## Выкладка
+## Deployment
 
-Развёрнуто на Vercel. `vercel.json` сажает функции в `fra1` — рядом с базой в
-eu-central-1: один запрос разбора фразы делает больше пятнадцати обращений к
-базе, и через Атлантику это добавляло бы около секунды на пустом месте.
+Deployed on Vercel. `vercel.json` pins functions to `fra1`, next to the database in
+`eu-central-1`: a single phrase-parsing request makes more than fifteen database
+round trips, and crossing the Atlantic for each of them would add roughly a second
+for nothing.
 
 ---
 
-## Как это писалось
+## How it was built
 
-В `docs/` лежат спецификация и план — план разбит на 16 задач с полным кодом
-каждого шага. Работа шла по нему: на задачу поднимался отдельный агент, между
-задачами проводилось ревью, найденное чинилось до перехода к следующей.
+`docs/` holds the specification and the implementation plan — sixteen tasks, each
+with the full code for every step. The work followed it: a fresh agent per task,
+a review between tasks, findings fixed before moving on.
 
-Двадцать шесть дефектов вскрылись не в коде, а **в самом плане**, и почти каждый
-— только когда что-то запускалось по-настоящему. `handoff.md` и история коммитов
-сохранили этот путь целиком, включая случаи, где правка «для одного вызывающего»
-через час ломала второго.
+Twenty-six defects turned out to be in **the plan itself** rather than in the code,
+and nearly every one of them surfaced only when something actually ran.
+`handoff.md` and the commit history preserve that path in full — including the
+cases where a fix made "for one caller" broke a second one an hour later.
