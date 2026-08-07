@@ -12,6 +12,13 @@ The whole app is built around one moment: take out your phone, say the thing, pu
 the phone away. That constraint drove every decision below, from how the model's
 output is treated to what a task block shows.
 
+**There is no speech recognition in the app.** The command bar is an ordinary text
+input. Dictation is done by whatever tool the user already has — the author uses
+Glaido, which pastes the recognized text into the focused field; the system
+keyboard's dictation works just as well. The same goes for the clarification
+dialog: its inputs take dictated text too. Staying out of the speech business
+keeps the app small and makes it independent of any one platform's audio API.
+
 Next.js 16 · TypeScript · Postgres (Supabase) · Anthropic API · Tailwind · Vitest
 
 > The interface and code comments are in Russian — it is a single-user app built
@@ -75,8 +82,9 @@ visible hour range is derived from working hours and then stretched to fit the
 week's actual tasks, so a 6 a.m. run is not drawn on top of the header.
 
 When the model understands *what* but not *when*, it creates the task as all-day
-and returns a question. The clarification dialog accepts another dictated phrase:
-*"tomorrow at 8, one hour"*.
+and returns a question. The clarification dialog takes another dictated phrase in
+the same way — *"tomorrow at 8, one hour"* — and a per-task toggle for "leave it
+as all-day".
 
 ---
 
