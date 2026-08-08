@@ -5,7 +5,7 @@ export const size = { width: 512, height: 512 };
 export const contentType = 'image/png';
 
 // На неё ссылается манифест. Отдаётся по пути /icon — хеш Next кладёт в query,
-// так что в матчере middleware исключение называется именно `icon`.
+// так что в матчере proxy исключение называется именно `icon`.
 export default function Icon() {
   return new ImageResponse(iconArt(size.width), size);
 }

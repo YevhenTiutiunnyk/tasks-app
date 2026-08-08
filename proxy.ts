@@ -1,7 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { verifySession } from '@/lib/auth';
 
-export async function middleware(request: NextRequest) {
+// Начиная с Next 16 это соглашение зовётся `proxy`: файл называется proxy.ts,
+// функция — proxy. Прежнее имя, middleware, ещё работает, но собирается с
+// предупреждением о том, что соглашение устарело.
+export async function proxy(request: NextRequest) {
   const token = request.cookies.get('session')?.value;
   if (token && (await verifySession(token, process.env.SESSION_SECRET!))) {
     return NextResponse.next();
@@ -22,7 +25,7 @@ export async function middleware(request: NextRequest) {
 // цвета и картинка — в базу эти маршруты не ходят.
 //
 // Новые исключения закрыты `$`: без него `icon` открыл бы и /iconxyz,
-// и /icons/secret. Проверяется в middleware.test.ts.
+// и /icons/secret. Проверяется в proxy.test.ts.
 export const config = {
   matcher: [
     '/((?!login|api/login|_next/static|_next/image|favicon.ico|manifest\\.webmanifest$|sw\\.js$|icon$|apple-icon$).*)',
