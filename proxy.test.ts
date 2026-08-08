@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { config } from './middleware';
+import { config } from './proxy';
 
 // Матчер — единственное, что решает, дойдёт ли запрос до проверки сессии.
 // Ошибка здесь не падает и не логируется: манифест просто получает редирект
 // на /login, iOS молча его не разбирает, и приложение остаётся закладкой.
-// Поэтому регулярка проверяется отдельно от самого middleware.
+// Поэтому регулярка проверяется отдельно от самого proxy.
 const matcher = new RegExp(`^${config.matcher[0]}$`);
 
-/** true — запрос перехватывает middleware, то есть путь под паролем. */
+/** true — запрос перехватывает proxy, то есть путь под паролем. */
 function guarded(pathname: string): boolean {
   return matcher.test(pathname);
 }
 
-describe('матчер middleware', () => {
+describe('матчер proxy', () => {
   it('пропускает без сессии то, что браузер запрашивает анонимно', () => {
     // Манифест браузер тянет без кук: у <link rel="manifest"> нет
     // crossorigin="use-credentials", и Next его не добавляет.
