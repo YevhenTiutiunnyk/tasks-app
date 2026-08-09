@@ -24,10 +24,13 @@ export async function proxy(request: NextRequest) {
 // ни ошибки, ни записи в логах. Наружу при этом открыты только название,
 // цвета и картинка — в базу эти маршруты не ходят.
 //
-// Новые исключения закрыты `$`: без него `icon` открыл бы и /iconxyz,
+// Сюда же добавлен api/notify: его дёргает планировщик из Supabase, у которого
+// никакой сессии нет и быть не может. Роут защищён своим секретом в заголовке.
+//
+// Все эти исключения закрыты `$`: без него `icon` открыл бы и /iconxyz,
 // и /icons/secret. Проверяется в proxy.test.ts.
 export const config = {
   matcher: [
-    '/((?!login|api/login|_next/static|_next/image|favicon.ico|manifest\\.webmanifest$|sw\\.js$|icon$|apple-icon$).*)',
+    '/((?!login|api/login|api/notify$|_next/static|_next/image|favicon.ico|manifest\\.webmanifest$|sw\\.js$|icon$|apple-icon$).*)',
   ],
 };

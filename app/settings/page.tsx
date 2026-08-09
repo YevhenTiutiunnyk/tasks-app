@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { clockToMinutes, minutesToClock } from '@/lib/format';
+import PushToggle from '../push-toggle';
 import type { Settings } from '@/lib/types';
 
 export default function SettingsPage() {
@@ -109,6 +110,28 @@ export default function SettingsPage() {
           className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
         />
         <p className="text-xs opacity-55">Этот текст уходит в каждый запрос вместе с фразой.</p>
+      </section>
+
+      <PushToggle />
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium">За сколько предупреждать</h2>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            max={1439}
+            value={settings.notifyBeforeMinutes}
+            onChange={(e) =>
+              setSettings({ ...settings, notifyBeforeMinutes: Number(e.target.value) })
+            }
+            className="w-24 rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <span className="text-sm opacity-60">минут до начала</span>
+        </div>
+        <p className="text-xs opacity-55">
+          Задачи на весь день и уже выполненные не напоминаются.
+        </p>
       </section>
 
       <section className="space-y-2">

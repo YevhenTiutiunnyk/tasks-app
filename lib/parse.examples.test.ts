@@ -13,6 +13,7 @@ const settings: Settings = {
     { id: 'sport', name: 'Спорт', color: '#22c55e' },
     { id: 'health', name: 'Здоровье', color: '#ef4444' },
   ],
+  notifyBeforeMinutes: 15,
 };
 
 const DOCTOR_ID = 'aaaaaaaa-0000-4000-8000-000000000001';

@@ -7,6 +7,7 @@ const settings: Settings = {
   workEndMinute: 1080,    // 18:00
   aboutMe: '',
   categories: [],
+  notifyBeforeMinutes: 15,
 };
 
 function task(fields: Partial<Task>): Task {

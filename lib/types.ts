@@ -39,6 +39,8 @@ export interface Settings {
   workEndMinute: number;
   aboutMe: string;
   categories: Category[];
+  /** За сколько минут до начала задачи присылать напоминание. */
+  notifyBeforeMinutes: number;
 }
 
 export type Operation =

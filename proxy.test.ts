@@ -39,6 +39,13 @@ describe('матчер proxy', () => {
     expect(guarded('/manifest.webmanifest.bak')).toBe(true);
   });
 
+  it('пропускает эндпоинт отправки уведомлений', () => {
+    // Его дёргает планировщик из Supabase — сессии у него нет.
+    expect(guarded('/api/notify')).toBe(false);
+    expect(guarded('/api/notifyxyz')).toBe(true);
+    expect(guarded('/api/notify/all')).toBe(true);
+  });
+
   it('оставляет открытым вход', () => {
     expect(guarded('/login')).toBe(false);
     expect(guarded('/api/login')).toBe(false);

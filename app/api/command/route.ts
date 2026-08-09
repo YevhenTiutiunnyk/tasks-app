@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { addDays, isValidIsoDate, weekRange } from '@/lib/dates';
-import { getSettings } from '@/lib/db';
+import { getSettings, saveTimezone } from '@/lib/db';
+import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
 import { loadRange, loadWeek } from '@/lib/week';
 import { parseCommand } from '@/lib/parse';
@@ -20,9 +21,18 @@ export async function POST(request: Request) {
   const contextFrom = addDays(from, -7);
   const contextTo = addDays(to, 7);
 
+  // Пояс приходит от устройства и сохраняется здесь, а не на загрузке
+  // расписания: команды отдаются с телефона, и телефон — источник правды
+  // о том, где пользователь находится. Открытие расписания с ноутбука или
+  // через VPN пояс не сдвинет. Планировщику уведомлений он нужен из базы:
+  // браузера у него нет.
+  const zone = timezone ? normalizeTimezone(timezone) : null;
+  const saveZone = zone ? saveTimezone(zone) : Promise.resolve();
+
   const [contextTasks, settings] = await Promise.all([
     loadRange(contextFrom, contextTo),
     getSettings(),
+    saveZone,
   ]);
 
   let parsed;

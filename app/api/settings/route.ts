@@ -36,11 +36,19 @@ export async function PUT(request: Request) {
     return badRequest(`«Про меня» — не длиннее ${MAX_ABOUT_ME} символов`);
   }
 
+  // Верхняя граница — сутки: напоминание за большее время до начала попало бы
+  // в предыдущий день, а эндпоинт отправки смотрит только сегодня и завтра.
+  const before = body.notifyBeforeMinutes;
+  if (!Number.isInteger(before) || before < 0 || before > 1439) {
+    return badRequest('Напоминать можно от 0 до 1439 минут до начала');
+  }
+
   await saveSettings({
     workStartMinute: body.workStartMinute,
     workEndMinute: body.workEndMinute,
     aboutMe,
     categories: body.categories,
+    notifyBeforeMinutes: before,
   });
   return NextResponse.json({ ok: true });
 }
