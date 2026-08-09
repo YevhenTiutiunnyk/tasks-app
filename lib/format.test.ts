@@ -4,8 +4,26 @@ import {
   formatDayLabel,
   formatDuration,
   formatTimeRange,
+  formatWeekRange,
   minutesToClock,
 } from './format';
+
+describe('formatWeekRange', () => {
+  it('внутри одного месяца называет месяц один раз', () => {
+    expect(formatWeekRange('2026-08-03', '2026-08-09')).toBe('3–9 августа');
+  });
+
+  it('на стыке месяцев называет оба', () => {
+    expect(formatWeekRange('2026-07-30', '2026-08-05')).toBe('30 июля – 5 августа');
+  });
+
+  it('на стыке годов добавляет годы', () => {
+    // Иначе «28 декабря – 3 января» не говорит, какой это год из двух.
+    expect(formatWeekRange('2026-12-28', '2027-01-03')).toBe(
+      '28 декабря 2026 – 3 января 2027',
+    );
+  });
+});
 
 describe('minutesToClock', () => {
   it('добивает нулями', () => expect(minutesToClock(540)).toBe('09:00'));

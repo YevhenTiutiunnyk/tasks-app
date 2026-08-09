@@ -113,17 +113,17 @@ export default function PushToggle() {
     <section className="space-y-2">
       <h2 className="text-sm font-medium">Напоминания</h2>
 
-      {state === 'loading' && <p className="text-xs opacity-55">Проверяю…</p>}
+      {state === 'loading' && <p className="text-xs text-muted">Проверяю…</p>}
 
       {state === 'unsupported' && (
-        <p className="text-xs opacity-55">
+        <p className="text-xs text-muted">
           Этот браузер не умеет уведомления. На iPhone они работают только
           в приложении, добавленном на главный экран.
         </p>
       )}
 
       {state === 'denied' && (
-        <p className="text-xs opacity-55">
+        <p className="text-xs text-muted">
           Уведомления запрещены в настройках устройства. Включить их обратно
           можно только там — из приложения повторно спросить нельзя.
         </p>
@@ -134,11 +134,11 @@ export default function PushToggle() {
           <button
             onClick={state === 'on' ? disable : enable}
             disabled={busy}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            className="rounded-md bg-ink px-3 py-1.5 text-sm text-paper disabled:opacity-30"
           >
             {state === 'on' ? 'Выключить' : 'Включить'}
           </button>
-          <span className="text-xs opacity-55">
+          <span className="text-xs text-muted">
             {state === 'on' ? 'Включены на этом устройстве' : 'Выключены'}
           </span>
         </div>
@@ -146,7 +146,7 @@ export default function PushToggle() {
 
       {error && <p className="text-xs text-red-600">{error}</p>}
 
-      <p className="text-xs opacity-55">
+      <p className="text-xs text-muted">
         Подписка живёт, пока значок остаётся на главном экране. Если удалить
         и добавить его заново, уведомления надо включить ещё раз.
       </p>

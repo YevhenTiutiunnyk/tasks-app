@@ -94,28 +94,28 @@ export function ClarifyDialog({ items, today, onDone, onLater }: Props) {
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-sm rounded-xl bg-white p-4 dark:bg-neutral-900">
+      <div className="w-full max-w-sm rounded-xl bg-surface p-5">
         <h2 className="text-base font-semibold">Уточни время</h2>
-        <p className="mb-3 text-xs opacity-60">
+        <p className="mb-3 text-xs text-muted">
           {items.length === 1 ? 'Для одной задачи не понял, когда её ставить' : `Для ${items.length} задач не понял, когда их ставить`}
         </p>
 
         {items.map((item) => (
-          <div key={item.taskId} className="border-t border-neutral-500/20 py-3">
+          <div key={item.taskId} className="border-t border-hairline py-3">
             <p className="text-sm font-medium">{item.title}</p>
             {/* Вопрос модели сформулирован под конкретный случай: когда не
                 понятен даже день, он спрашивает и день, и время. Без него на
                 экране остаётся только общий подзаголовок, и разница пропадает. */}
-            {item.question && <p className="mb-2 text-xs opacity-60">{item.question}</p>}
+            {item.question && <p className="mb-2 text-xs text-muted">{item.question}</p>}
             <div className="flex items-center gap-2">
               <input
                 value={values[item.taskId] ?? ''}
                 onChange={(e) => setValues({ ...values, [item.taskId]: e.target.value })}
                 disabled={allDay[item.taskId]}
                 placeholder="🎤 например: завтра в 8 утра, час"
-                className="flex-1 rounded-md border border-neutral-300 px-2 py-1.5 text-xs disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-950"
+                className="flex-1 rounded-md border border-hairline bg-surface px-2.5 py-1.5 text-xs disabled:opacity-40"
               />
-              <label className="flex shrink-0 items-center gap-1.5 text-[11px] opacity-80">
+              <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
                 <input
                   type="checkbox"
                   checked={allDay[item.taskId] ?? false}
@@ -129,14 +129,14 @@ export function ClarifyDialog({ items, today, onDone, onLater }: Props) {
 
         {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
 
-        <div className="mt-3 flex justify-end gap-2 border-t border-neutral-500/20 pt-3">
-          <button onClick={onLater} className="rounded-md border border-neutral-500/30 px-3 py-1.5 text-xs">
+        <div className="mt-3 flex justify-end gap-2 border-t border-hairline pt-3">
+          <button onClick={onLater} className="rounded-md border border-hairline px-3 py-1.5 text-xs">
             Позже
           </button>
           <button
             onClick={() => void submit()}
             disabled={busy}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+            className="rounded-md bg-ink px-3 py-1.5 text-xs text-paper disabled:opacity-50"
           >
             {busy ? '…' : 'Готово'}
           </button>

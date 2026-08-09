@@ -140,11 +140,11 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
   return (
     <>
       <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-4">
-        <div className="w-full max-w-sm space-y-2.5 rounded-xl bg-white p-4 dark:bg-neutral-900">
+        <div className="w-full max-w-sm space-y-2.5 rounded-xl bg-surface p-5">
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-950"
+            className="w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
           />
 
           <div className="flex gap-2">
@@ -152,9 +152,9 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
               type="date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
-              className="flex-1 rounded-md border border-neutral-300 px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+              className="flex-1 rounded-md border border-hairline bg-surface px-2 py-1.5 text-xs"
             />
-            <label className="flex items-center gap-1.5 text-[11px] opacity-80">
+            <label className="flex items-center gap-1.5 text-[11px] text-muted">
               <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
               весь день
             </label>
@@ -166,14 +166,14 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
                 value={clock}
                 onChange={(e) => setClock(e.target.value)}
                 placeholder="9:30"
-                className="w-24 rounded-md border border-neutral-300 px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+                className="w-24 rounded-md border border-hairline bg-surface px-2 py-1.5 text-xs"
               />
               <input
                 value={duration}
                 onChange={(e) => setDuration(e.target.value)}
                 placeholder="минут"
                 inputMode="numeric"
-                className="w-24 rounded-md border border-neutral-300 px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+                className="w-24 rounded-md border border-hairline bg-surface px-2 py-1.5 text-xs"
               />
             </div>
           )}
@@ -181,12 +181,12 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
           {/* Поля хранят начало и минуты — так вводить точнее всего, — но по ним
               не видно ни конца задачи, ни того, семь это часов или четыре.
               Подсказка считается на лету и отвечает на оба вопроса. */}
-          {!allDay && hint && <p className="text-[11px] tabular-nums opacity-60">{hint}</p>}
+          {!allDay && hint && <p className="text-[11px] tabular-nums text-muted">{hint}</p>}
 
           <select
             value={categoryId}
             onChange={(e) => setCategoryId(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+            className="w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-xs"
           >
             <option value="">без категории</option>
             {settings.categories.map((c) => (
@@ -196,17 +196,17 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
 
           {error && <p className="text-xs text-red-600">{error}</p>}
 
-          <div className="flex items-center gap-2 border-t border-neutral-500/20 pt-2.5">
+          <div className="flex items-center gap-2 border-t border-hairline pt-2.5">
             {!isSeries && (
-              <button onClick={() => void toggleDone()} className="text-xs opacity-70">
+              <button onClick={() => void toggleDone()} className="text-xs text-muted">
                 {task.done ? 'Вернуть в работу' : 'Выполнено'}
               </button>
             )}
             <button onClick={() => start('delete')} className="text-xs text-red-600">Удалить</button>
-            <button onClick={onClose} className="ml-auto text-xs opacity-60">Отмена</button>
+            <button onClick={onClose} className="ml-auto text-xs text-muted">Отмена</button>
             <button
               onClick={() => start('save')}
-              className="rounded-md bg-blue-600 px-3 py-1.5 text-xs text-white"
+              className="rounded-md bg-ink px-3 py-1.5 text-xs text-paper"
             >
               Сохранить
             </button>

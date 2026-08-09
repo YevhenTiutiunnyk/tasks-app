@@ -44,7 +44,7 @@ export default function SettingsPage() {
   }, [router]);
 
   if (loadError) return <main className="p-6 text-sm text-red-600">{loadError}</main>;
-  if (!settings) return <main className="p-6 text-sm opacity-60">Загружаю…</main>;
+  if (!settings) return <main className="p-6 text-sm text-muted">Загружаю…</main>;
 
   async function save() {
     if (busy) return;
@@ -78,7 +78,7 @@ export default function SettingsPage() {
   return (
     <main className="mx-auto max-w-md space-y-5 p-5">
       <div className="flex items-center gap-3">
-        <Link href="/" className="text-sm opacity-60">← к расписанию</Link>
+        <Link href="/" className="text-sm text-muted">← к расписанию</Link>
         <h1 className="text-lg font-semibold">Настройки</h1>
       </div>
 
@@ -88,16 +88,16 @@ export default function SettingsPage() {
           <input
             value={start}
             onChange={(e) => setStart(e.target.value)}
-            className="w-24 rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-24 rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
           />
-          <span className="opacity-50">—</span>
+          <span className="text-faint">—</span>
           <input
             value={end}
             onChange={(e) => setEnd(e.target.value)}
-            className="w-24 rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-24 rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
           />
         </div>
-        <p className="text-xs opacity-55">По ним трактуются «утром», «после работы», «вечером».</p>
+        <p className="text-xs text-muted">По ним трактуются «утром», «после работы», «вечером».</p>
       </section>
 
       <section className="space-y-2">
@@ -107,9 +107,9 @@ export default function SettingsPage() {
           onChange={(e) => setSettings({ ...settings, aboutMe: e.target.value })}
           rows={4}
           placeholder="Встаю в 7, спортзал обычно вечером, по средам работаю из дома…"
-          className="w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          className="w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
         />
-        <p className="text-xs opacity-55">Этот текст уходит в каждый запрос вместе с фразой.</p>
+        <p className="text-xs text-muted">Этот текст уходит в каждый запрос вместе с фразой.</p>
       </section>
 
       <PushToggle />
@@ -125,11 +125,11 @@ export default function SettingsPage() {
             onChange={(e) =>
               setSettings({ ...settings, notifyBeforeMinutes: Number(e.target.value) })
             }
-            className="w-24 rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-24 rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
           />
-          <span className="text-sm opacity-60">минут до начала</span>
+          <span className="text-sm text-muted">минут до начала</span>
         </div>
-        <p className="text-xs opacity-55">
+        <p className="text-xs text-muted">
           Задачи на весь день и уже выполненные не напоминаются.
         </p>
       </section>
@@ -146,7 +146,7 @@ export default function SettingsPage() {
                 next[index] = { ...category, color: e.target.value };
                 setSettings({ ...settings, categories: next });
               }}
-              className="h-7 w-9 rounded border border-neutral-500/30"
+              className="h-7 w-9 rounded border border-hairline"
             />
             <input
               value={category.name}
@@ -155,7 +155,7 @@ export default function SettingsPage() {
                 next[index] = { ...category, name: e.target.value };
                 setSettings({ ...settings, categories: next });
               }}
-              className="flex-1 rounded-md border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+              className="flex-1 rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
             />
             <button
               onClick={() =>
@@ -164,7 +164,7 @@ export default function SettingsPage() {
                   categories: settings.categories.filter((_, i) => i !== index),
                 })
               }
-              className="px-1 text-xs opacity-50"
+              className="px-1 text-xs text-faint"
             >
               ✕
             </button>
@@ -180,21 +180,21 @@ export default function SettingsPage() {
               ],
             })
           }
-          className="text-xs opacity-65"
+          className="text-xs text-muted"
         >
           + добавить категорию
         </button>
       </section>
 
-      <div className="flex items-center gap-3 border-t border-neutral-500/20 pt-4">
+      <div className="flex items-center gap-3 border-t border-hairline pt-4">
         <button
           onClick={() => void save()}
           disabled={busy}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50"
+          className="rounded-md bg-ink px-4 py-2 text-sm text-paper disabled:opacity-50"
         >
           {busy ? '…' : 'Сохранить'}
         </button>
-        {status && <span className="text-xs opacity-65">{status}</span>}
+        {status && <span className="text-xs text-muted">{status}</span>}
       </div>
     </main>
   );

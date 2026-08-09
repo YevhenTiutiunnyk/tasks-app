@@ -76,8 +76,8 @@ export function CommandBar({ today, onResult }: Props) {
   }
 
   return (
-    <div className="fixed inset-x-0 bottom-0 border-t border-neutral-500/20 bg-white/90 p-3 backdrop-blur dark:bg-neutral-950/90">
-      <div className="mx-auto flex max-w-3xl gap-2">
+    <div className="fixed inset-x-0 bottom-0 border-t border-hairline bg-paper/85 p-4 backdrop-blur">
+      <div className="mx-auto flex max-w-3xl items-center gap-2">
         <input
           value={text}
           onChange={(e) => update(e.target.value)}
@@ -89,21 +89,21 @@ export function CommandBar({ today, onResult }: Props) {
           }}
           placeholder="Надиктуй задачи…"
           disabled={busy}
-          className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900"
+          className="min-w-0 flex-1 rounded-full border border-hairline bg-surface px-4 py-2.5 text-[15px] placeholder:text-faint focus:border-ink focus:outline-none disabled:opacity-60"
         />
         <button
           onClick={() => void send()}
           disabled={busy || !text.trim()}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50"
+          className="shrink-0 rounded-full bg-ink px-5 py-2.5 text-[15px] font-medium text-paper transition-opacity disabled:opacity-30"
         >
           {busy ? '…' : 'Ок'}
         </button>
       </div>
-      {error && <p className="mx-auto mt-1.5 max-w-3xl text-xs text-red-600">{error}</p>}
+      {error && <p className="mx-auto mt-2 max-w-3xl text-[13px] text-red-600">{error}</p>}
       {/* Не ошибка, а ответ на сказанное — поэтому нейтрально, а не красным. */}
-      {notice && <p className="mx-auto mt-1.5 max-w-3xl text-xs opacity-70">{notice}</p>}
+      {notice && <p className="mx-auto mt-2 max-w-3xl text-[13px] text-muted">{notice}</p>}
       {rejected.length > 0 && (
-        <ul className="mx-auto mt-1.5 max-w-3xl space-y-0.5 text-xs text-amber-600">
+        <ul className="mx-auto mt-2 max-w-3xl space-y-0.5 text-[13px] text-now">
           {rejected.map((item, index) => (
             <li key={index}>Не выполнено: {item.reason}</li>
           ))}

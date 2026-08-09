@@ -9,6 +9,7 @@ import { TaskCard } from '@/components/TaskCard';
 import { UndoToast } from '@/components/UndoToast';
 import { WeekGrid } from '@/components/WeekGrid';
 import { addDays } from '@/lib/dates';
+import { formatWeekRange } from '@/lib/format';
 import type { Settings, Task } from '@/lib/types';
 
 interface WeekData {
@@ -160,13 +161,46 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto max-w-6xl p-3 pb-28">
-      <header className="mb-3 flex items-center gap-2">
-        <button onClick={() => setAnchor(addDays(anchor, -7))} className="rounded px-2 py-1 hover:bg-neutral-500/10">←</button>
-        <button onClick={() => setAnchor(todayIso())} className="rounded px-2 py-1 text-sm hover:bg-neutral-500/10">Сегодня</button>
-        <button onClick={() => setAnchor(addDays(anchor, 7))} className="rounded px-2 py-1 hover:bg-neutral-500/10">→</button>
-        <span className="ml-auto mr-2 text-sm opacity-60">{week.from} — {week.to}</span>
-        <a href="/settings" className="rounded px-2 py-1 text-sm opacity-60 hover:bg-neutral-500/10">Настройки</a>
+    // w-full обязателен: mx-auto ставит автоматические поля, а они отменяют
+    // растягивание флекс-элемента, и ширина становится по содержимому.
+    // Раньше это скрывали длинные подписи дней.
+    <main className="mx-auto w-full max-w-6xl p-4 pb-28">
+      {/*
+        Заголовок недели набран крупно и по-человечески: раньше здесь стояло
+        '2026-08-03 — 2026-08-09', и на телефоне эта строка переносилась
+        на две, налезая на стрелки.
+      */}
+      <header className="mb-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <h1 className="text-xl font-semibold tracking-[-0.02em]">
+            {formatWeekRange(week.from, week.to)}
+          </h1>
+          <a href="/settings" className="shrink-0 text-[13px] text-muted hover:text-ink">
+            Настройки
+          </a>
+        </div>
+        <div className="mt-1 flex items-center gap-1 text-[13px] text-faint">
+          <button
+            onClick={() => setAnchor(addDays(anchor, -7))}
+            aria-label="Предыдущая неделя"
+            className="rounded px-1.5 py-0.5 hover:bg-hairline hover:text-ink"
+          >
+            ←
+          </button>
+          <button
+            onClick={() => setAnchor(todayIso())}
+            className="rounded px-1.5 py-0.5 hover:bg-hairline hover:text-ink"
+          >
+            сегодня
+          </button>
+          <button
+            onClick={() => setAnchor(addDays(anchor, 7))}
+            aria-label="Следующая неделя"
+            className="rounded px-1.5 py-0.5 hover:bg-hairline hover:text-ink"
+          >
+            →
+          </button>
+        </div>
       </header>
 
       {loadError && (

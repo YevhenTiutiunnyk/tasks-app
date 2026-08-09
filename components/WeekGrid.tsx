@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { useNowMinute } from '@/components/useNowMinute';
 import { eachDay, weekdayOf } from '@/lib/dates';
 import { formatDayLabel, formatTimeRange, minutesToClock } from '@/lib/format';
 import { visibleHourRange } from '@/lib/grid';
@@ -32,6 +33,7 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
   const pressStart = useRef<{ x: number; y: number } | null>(null);
 
   // Рабочий день плюс два часа с каждой стороны, растянутый под реальные задачи недели.
+  const nowMinute = useNowMinute();
   const { firstHour, lastHour } = visibleHourRange(tasks, settings);
   const hours = Array.from({ length: lastHour - firstHour }, (_, i) => firstHour + i);
   const gridHeight = hours.length * HOUR_HEIGHT;
@@ -54,8 +56,12 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
           {days.map((day) => (
             <div
               key={day}
-              className={`px-1 pb-1 text-center text-xs uppercase tracking-wide ${
-                day === today ? 'font-bold text-blue-600' : 'opacity-60'
+              // Сегодня отмечено насыщенностью и линией под днём, а не цветом:
+              // синий уже занят категорией и спорил бы с ней по смыслу.
+              className={`px-1 pb-1.5 text-center text-[11px] uppercase tracking-[0.12em] ${
+                day === today
+                  ? 'border-b-[1.5px] border-ink font-semibold text-ink'
+                  : 'text-faint'
               }`}
             >
               {formatDayLabel(day, weekdayOf(day))}
@@ -71,8 +77,8 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                 <button
                   key={task.id}
                   onClick={() => onSelect(task)}
-                  style={{ borderLeftColor: colorOf(task, settings) }}
-                  className={`block w-full truncate rounded border-l-2 bg-neutral-500/10 px-1.5 py-1 text-left text-[11px] ${
+                  style={{ ['--cat' as string]: colorOf(task, settings) }}
+                  className={`cat-tint cat-border block w-full truncate rounded-md border-l-2 px-1.5 py-1 text-left text-[11px] ${
                     task.done ? 'line-through opacity-50' : ''
                   }`}
                 >
@@ -91,7 +97,7 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
             {hours.map((hour, index) => (
               <div
                 key={hour}
-                className="absolute right-1 -translate-y-1/2 text-[10px] opacity-45"
+                className="absolute right-2 -translate-y-1/2 text-[10px] tabular-nums text-faint"
                 style={{ top: index * HOUR_HEIGHT }}
               >
                 {minutesToClock(hour * 60)}
@@ -100,14 +106,23 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
           </div>
 
           {days.map((day) => (
-            <div key={day} data-day={day} className="relative border-l border-neutral-500/15">
+            <div key={day} data-day={day} className="relative border-l border-hairline">
               {hours.map((hour, index) => (
                 <div
                   key={hour}
-                  className="absolute inset-x-0 border-t border-neutral-500/15"
+                  className="absolute inset-x-0 border-t border-hairline"
                   style={{ top: index * HOUR_HEIGHT }}
                 />
               ))}
+
+              {/* Линия текущего момента — только в сегодняшней колонке. */}
+              {day === today && nowMinute !== null && (
+                <div
+                  className="pointer-events-none absolute inset-x-0 z-10 h-px bg-now opacity-70"
+                  style={{ top: ((nowMinute - firstHour * 60) / 60) * HOUR_HEIGHT }}
+                  aria-hidden
+                />
+              )}
 
               {timedByDate.get(day)!.map((task) => {
                 const start = task.startMinute ?? 0;
@@ -185,17 +200,19 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                     style={{
                       top,
                       height,
-                      borderLeftColor: colorOf(task, settings),
-                      backgroundColor: `${colorOf(task, settings)}26`,
+                      ['--cat' as string]: colorOf(task, settings),
                       opacity: dragging?.taskId === task.id ? 0.5 : undefined,
                       touchAction: 'none',
                     }}
-                    className={`absolute inset-x-1 overflow-hidden rounded border-l-2 px-1.5 py-0.5 text-left text-[11px] leading-tight ${
+                    // flex-col прижимает подпись к верху блока: у кнопки
+                    // содержимое по умолчанию центрируется, и в высоком блоке
+                    // название висело посередине, а не там, где задача начинается.
+                    className={`cat-tint cat-border absolute inset-x-1 flex flex-col items-stretch justify-start overflow-hidden rounded-md border-l-2 px-2 py-1 text-left text-[11px] leading-tight ${
                       task.done ? 'line-through opacity-50' : ''
                     }`}
                   >
                     <span className="block truncate font-medium">{task.title}</span>
-                    <span className="block text-[9px] tabular-nums opacity-70">
+                    <span className="block text-[10px] tabular-nums text-muted">
                       {formatTimeRange(start, task.durationMinutes)}
                     </span>
                   </button>

@@ -1,26 +1,93 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+  «Бумага»: тёплый нейтральный фон, тонкие линии, цвет только в категориях.
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  Фон намеренно не чистый белый и не чистый чёрный. Разница на глаз почти
+  незаметна, но именно она отличает «сделано намеренно» от «оставили как было
+  в шаблоне».
+
+  Тёмная тема — не инверсия светлой, а та же идея в другой температуре.
+  Значения объявлены здесь один раз, поэтому в компонентах не нужен префикс
+  dark: — две темы, размазанные по сорока местам, неизбежно разъезжаются.
+*/
+
+:root {
+  --paper: #faf9f7;    /* фон страницы */
+  --surface: #ffffff;  /* поля ввода, карточки, всплывающие окна */
+  --ink: #1c1917;      /* основной текст */
+  --muted: #78716c;    /* время, длительность, пояснения */
+  --faint: #a8a29e;    /* подписи дней, подсказки в полях */
+  --hairline: #e7e5e4; /* разделители и рамки */
+  --now: #b45309;      /* линия текущего момента */
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --paper: #151312;
+    --surface: #1c1917;
+    --ink: #ece7e1;
+    --muted: #8d857c;
+    --faint: #6b635b;
+    --hairline: #2a2522;
+    --now: #f59e0b;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-hairline: var(--hairline);
+  --color-now: var(--now);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/*
+  Цвет категории приходит из базы и подставляется компонентом в переменную
+  --cat. Решение, как его показать, принимает CSS: на тёмном фоне исходный
+  hex выглядит грязным, поэтому подмешивается белый. В TypeScript это сделать
+  нельзя — тема определяется системной настройкой, и скрипт узнал бы о ней
+  только после загрузки, с миганием.
+*/
+.cat-bar {
+  background: var(--cat);
+}
+
+.cat-tint {
+  background: color-mix(in oklab, var(--cat) 10%, transparent);
+}
+
+.cat-border {
+  border-left-color: var(--cat);
+}
+
+@media (prefers-color-scheme: dark) {
+  .cat-bar,
+  .cat-border {
+    background: color-mix(in oklab, var(--cat) 65%, #ffffff);
+  }
+
+  .cat-border {
+    background: none;
+    border-left-color: color-mix(in oklab, var(--cat) 65%, #ffffff);
+  }
+
+  .cat-tint {
+    background: color-mix(in oklab, var(--cat) 16%, transparent);
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  /*
+    Раньше здесь стоял Arial из шаблона create-next-app. Он перебивал Geist,
+    подключённый в app/layout.tsx: шрифт загружался и не применялся.
+  */
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
