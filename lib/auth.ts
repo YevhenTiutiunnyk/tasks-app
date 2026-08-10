@@ -1,5 +1,7 @@
 import { betterAuth } from 'better-auth';
+import { APIError } from 'better-auth/api';
 import { Pool } from 'pg';
+import { getUserEmailById, isEmailAllowed } from './allowed-emails';
 
 const encoder = new TextEncoder();
 
@@ -71,5 +73,26 @@ export const auth = betterAuth({
   session: {
     expiresIn: 60 * 60 * 24 * 30,
     updateAge: 60 * 60 * 24,
+  },
+  /**
+   * Белый список. Проверка стоит до создания сессии, а не после: чужой не
+   * должен получить сессию даже на секунду.
+   *
+   * Хук именно на сессии, а не на создании пользователя: создание срабатывает
+   * один раз, и адрес, убранный из списка позже, продолжал бы пускать.
+   *
+   * Отказ без подробностей о том, кто допущен.
+   */
+  databaseHooks: {
+    session: {
+      create: {
+        before: async (session) => {
+          const email = await getUserEmailById(session.userId);
+          if (!email || !(await isEmailAllowed(email))) {
+            throw new APIError('FORBIDDEN', { message: 'Вход не разрешён' });
+          }
+        },
+      },
+    },
   },
 });
