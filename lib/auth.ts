@@ -1,3 +1,6 @@
+import { betterAuth } from 'better-auth';
+import { Pool } from 'pg';
+
 const encoder = new TextEncoder();
 
 async function hmac(payload: string, secret: string): Promise<string> {
@@ -44,3 +47,29 @@ export async function verifySession(token: string, secret: string): Promise<bool
   if (!Number.isFinite(issuedAt)) return false;
   return Date.now() - issuedAt <= SESSION_MAX_AGE_SECONDS * 1000;
 }
+
+/**
+ * Отдельный пул на драйвере pg — так требует Better Auth: он ходит в Postgres
+ * через Kysely, а наш postgres.js ему не подходит. Пул приложения в lib/db.ts
+ * этим не затрагивается.
+ *
+ * Именованные подготовленные выражения транзакционный пулер Supabase (порт
+ * 6543) не поддерживает; node-postgres по умолчанию их не использует.
+ */
+export const auth = betterAuth({
+  database: new Pool({ connectionString: process.env.DATABASE_URL }),
+  baseURL: process.env.BETTER_AUTH_URL,
+  secret: process.env.BETTER_AUTH_SECRET,
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID as string,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
+    },
+  },
+  // 30 дней со скольжением: продлевается не чаще раза в сутки, чтобы каждое
+  // открытие приложения не писало в базу.
+  session: {
+    expiresIn: 60 * 60 * 24 * 30,
+    updateAge: 60 * 60 * 24,
+  },
+});
