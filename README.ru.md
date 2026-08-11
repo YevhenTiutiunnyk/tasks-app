@@ -66,7 +66,7 @@ nullable, потому что структурированный вывод тр
 | Применение и откат | `lib/apply.ts` | Транзакция, слепок, откат пачки |
 | Обращения к модели | `lib/parse.ts`, `lib/parse-clarify.ts` | Единственные места, знающие про Anthropic |
 | Доступ к данным | `lib/db.ts`, `lib/week.ts` | Запросы и сборка недели |
-| HTTP | `app/api/*` | Шесть роутов: неделя, команда, уточнение, отмена, задачи, настройки |
+| HTTP | `app/api/*` | Девять роутов: неделя, команда, уточнение, отмена, задачи, настройки, подписка, рассылка, вход |
 | Экран | `app/page.tsx`, `components/*` | Сетка, лента, карточка, строка ввода |
 
 Широкий экран показывает недельную сетку с часовой линейкой, узкий —
@@ -107,8 +107,16 @@ RUN_LLM_TESTS=1 node --env-file=.env.local ./node_modules/vitest/vitest.mjs run 
 
 1. `npm install`
 2. Скопировать `.env.local.example` в `.env.local` и заполнить.
-3. Применить `supabase/migrations/0001_init.sql` в SQL-редакторе Supabase.
-4. `npm run dev`
+3. Применить в SQL-редакторе Supabase все миграции из `supabase/migrations/`
+   по порядку: `0001_init.sql`, `0002_push.sql`, `0003_auth.sql`.
+4. Вписать свой адрес Google в белый список, в нижнем регистре — без этой
+   строки не войдёт никто, и страница входа о причине не скажет:
+
+   ```sql
+   insert into allowed_emails (email) values ('you@example.com');
+   ```
+
+5. `npm run dev`
 
 | Переменная | Что это |
 | --- | --- |
