@@ -81,6 +81,14 @@ describe('матчер proxy', () => {
     expect(guarded('/apple-icons')).toBe(true);
     expect(guarded('/sw.js.map')).toBe(true);
     expect(guarded('/manifest.webmanifest.bak')).toBe(true);
+    // Якорь `(?:$|\.)` там, где `$` применить нельзя: он должен пускать
+    // транспортные формы и при этом не пускать чужие пути.
+    expect(guarded('/loginxyz')).toBe(true);
+    expect(guarded('/login/')).toBe(true);
+    expect(guarded('/login/x')).toBe(true);
+    // Точка в favicon.ico — настоящая точка, а не «любой символ».
+    expect(guarded('/faviconXico')).toBe(true);
+    expect(guarded('/favicon.icoX')).toBe(true);
   });
 
   it('пропускает эндпоинт отправки уведомлений', () => {
