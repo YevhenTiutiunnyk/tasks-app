@@ -11,13 +11,24 @@ vi.mock('@/lib/auth', () => ({ auth: { api: { getSession: (opts: unknown) => get
 
 const { proxy } = await import('./proxy');
 
+/**
+ * Ответ getSession в форме `returnHeaders`: сессия и заголовки приходят
+ * порознь. Мок обязан повторять именно эту форму — вернув голую сессию, он
+ * скрыл бы от тестов сам объект, в котором Better Auth приносит свежую куку.
+ */
+function sessionResult(session: unknown, setCookie: string[] = []) {
+  const headers = new Headers();
+  for (const cookie of setCookie) headers.append('set-cookie', cookie);
+  return { headers, response: session };
+}
+
 beforeEach(() => {
   getSession.mockReset();
 });
 
 describe('proxy', () => {
   it('пропускает запрос, когда сессия есть', async () => {
-    getSession.mockResolvedValue({ user: { id: 'zz-user' } });
+    getSession.mockResolvedValue(sessionResult({ user: { id: 'zz-user' } }));
     const response = await proxy(new NextRequest('https://example.test/'));
     expect(response.status).toBe(200);
     expect(response.headers.get('location')).toBeNull();
@@ -27,20 +38,48 @@ describe('proxy', () => {
     expect(response.headers.get('x-middleware-next')).toBe('1');
     // Без этой проверки мок мог бы терять заголовки запроса, и реализация,
     // забывшая передать их в getSession, тоже прошла бы тест.
-    expect(getSession).toHaveBeenCalledWith({ headers: expect.any(Headers) });
+    // returnHeaders здесь не деталь вызова, а условие: без него Better Auth
+    // отдаёт одну сессию и продлённая кука до прокси не доходит вовсе.
+    expect(getSession).toHaveBeenCalledWith({
+      headers: expect.any(Headers),
+      returnHeaders: true,
+    });
+  });
+
+  it('доносит до браузера куку, продлённую скольжением сессии', async () => {
+    // getSession по истечении updateAge продлевает строку сессии в базе и
+    // кладёт свежую куку в свои заголовки. NextResponse.next() их не
+    // наследует: не перенеси мы куку — срок в браузере остался бы тем, что
+    // выдан при входе, и сессия умирала бы через 30 дней после входа,
+    // а не после последнего визита. Молча: пользователь просто однажды
+    // оказался бы на странице входа.
+    getSession.mockResolvedValue(
+      sessionResult({ user: { id: 'zz-user' } }, [
+        'zz.session_token=fresh; Path=/; Max-Age=2592000; HttpOnly',
+        'zz.session_data=cache; Path=/; Max-Age=300; HttpOnly',
+      ]),
+    );
+    const response = await proxy(new NextRequest('https://example.test/'));
+    expect(response.headers.get('x-middleware-next')).toBe('1');
+    // Именно getSetCookie и весь список: кук бывает несколько, и реализация,
+    // переносящая первую попавшуюся через set, потеряла бы остальные.
+    expect(response.headers.getSetCookie()).toEqual([
+      'zz.session_token=fresh; Path=/; Max-Age=2592000; HttpOnly',
+      'zz.session_data=cache; Path=/; Max-Age=300; HttpOnly',
+    ]);
   });
 
   it('отвечает 401 на api без сессии, а не редиректом', async () => {
     // Редирект на /login в ответ на fetch превратился бы для клиента
     // в HTML вместо JSON — и в невнятную ошибку разбора на экране.
-    getSession.mockResolvedValue(null);
+    getSession.mockResolvedValue(sessionResult(null));
     const response = await proxy(new NextRequest('https://example.test/api/week'));
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: 'Не авторизован' });
   });
 
   it('уводит страницу на вход без сессии', async () => {
-    getSession.mockResolvedValue(null);
+    getSession.mockResolvedValue(sessionResult(null));
     const response = await proxy(new NextRequest('https://example.test/settings'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe('https://example.test/login');

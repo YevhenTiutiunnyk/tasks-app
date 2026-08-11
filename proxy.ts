@@ -14,9 +14,14 @@ import { auth } from '@/lib/auth';
 // Это законно потому, что в Next 16 proxy по умолчанию работает на
 // Node-рантайме (опция runtime здесь запрещена и бросает ошибку).
 export async function proxy(request: NextRequest) {
-  let session;
+  let result;
   try {
-    session = await auth.api.getSession({ headers: request.headers });
+    // returnHeaders: true — не украшение вызова, а единственный способ забрать
+    // у Better Auth то, что он приготовил для браузера. Форму подсказывают
+    // типы getSession (node_modules/better-auth/dist/types/api.d.mts): при
+    // returnHeaders ответ приходит как { headers, response }, где response —
+    // сама сессия или null.
+    result = await auth.api.getSession({ headers: request.headers, returnHeaders: true });
   } catch (error) {
     // Лог без куки и заголовков: в них лежит содержимое сессии, а причина
     // отказа — обрыв связи с базой — в них не написана и без утечки видна.
@@ -29,8 +34,22 @@ export async function proxy(request: NextRequest) {
     // а сообщение "попробуй позже" в любом виде.
     return NextResponse.json({ error: 'Сервис временно недоступен' }, { status: 503 });
   }
-  if (session) {
-    return NextResponse.next();
+  if (result.response) {
+    const response = NextResponse.next();
+    // Скольжение срока живёт здесь. По истечении updateAge getSession сам
+    // продлевает строку сессии в базе и кладёт свежую куку в заголовки своего
+    // контекста, но NextResponse.next() их не наследует — без переноса срок
+    // в браузере навсегда остался бы тем, что выдан при входе, и сессия
+    // умирала бы через 30 дней после входа, а не после последнего визита.
+    // Заметить это можно было бы только через месяц и только по внезапному
+    // возврату на страницу входа.
+    //
+    // append и весь список: кук бывает несколько (токен сессии и её кэш),
+    // а set оставил бы одну.
+    for (const cookie of result.headers.getSetCookie()) {
+      response.headers.append('set-cookie', cookie);
+    }
+    return response;
   }
   if (request.nextUrl.pathname.startsWith('/api/')) {
     return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
