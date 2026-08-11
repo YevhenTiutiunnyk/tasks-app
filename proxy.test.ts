@@ -48,6 +48,24 @@ describe('матчер proxy', () => {
 
   it('оставляет открытым вход', () => {
     expect(guarded('/login')).toBe(false);
-    expect(guarded('/api/login')).toBe(false);
+  });
+
+  it('пропускает роуты Better Auth', () => {
+    // Better Auth — catch-all: начало входа, колбэк от Google, выход.
+    // Без этого исключения Google возвращал бы пользователя на колбэк, прокси
+    // видел бы отсутствие сессии и слал бы его на /login — по кругу и молча.
+    expect(guarded('/api/auth/sign-in/social')).toBe(false);
+    expect(guarded('/api/auth/callback/google')).toBe(false);
+    expect(guarded('/api/auth/sign-out')).toBe(false);
+  });
+
+  it('не открывает наружу пути, лишь начинающиеся как api/auth', () => {
+    // Роль якоря здесь играет слеш: `$` тут применить нельзя, путей много.
+    expect(guarded('/api/authxyz')).toBe(true);
+    expect(guarded('/api/auth')).toBe(true);
+  });
+
+  it('закрывает исчезнувший роут пароля', () => {
+    expect(guarded('/api/login')).toBe(true);
   });
 });
