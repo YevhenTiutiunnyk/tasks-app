@@ -43,18 +43,33 @@ export async function proxy(request: NextRequest) {
     // умирала бы через 30 дней после входа, а не после последнего визита.
     // Заметить это можно было бы только через месяц и только по внезапному
     // возврату на страницу входа.
-    //
-    // append и весь список: кук бывает несколько (токен сессии и её кэш),
-    // а set оставил бы одну.
-    for (const cookie of result.headers.getSetCookie()) {
-      response.headers.append('set-cookie', cookie);
-    }
-    return response;
+    return withSetCookies(response, result.headers);
   }
   if (request.nextUrl.pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
+    // Сессии нет, но кука в запросе могла быть — протухшей. В этом случае
+    // getSession сам зовёт deleteSessionCookie и кладёт в result.headers
+    // команду на удаление (node_modules/better-auth/dist/api/routes/session.mjs,
+    // ветка истёкшей сессии). Не перенеси мы её — браузер держал бы мёртвую
+    // куку до её собственного Max-Age (до 30 дней), и каждый запрос заново
+    // бил бы в базу впустую. Открыть это не открывает: команда одна —
+    // на удаление, продлевать здесь нечего.
+    return withSetCookies(NextResponse.json({ error: 'Не авторизован' }, { status: 401 }), result.headers);
   }
-  return NextResponse.redirect(new URL('/login', request.url));
+  // Та же чистка и по той же причине — для страниц.
+  return withSetCookies(NextResponse.redirect(new URL('/login', request.url)), result.headers);
+}
+
+// Общее место для переноса Set-Cookie из ответа Better Auth в ответ прокси.
+// Нужно во всех трёх ветках (сессия есть, 401, 307) — раскопируй цикл по
+// каждой из них, и три копии разъедутся при первой же правке.
+//
+// append и весь список: кук бывает несколько (токен сессии и её кэш), а set
+// оставил бы одну.
+function withSetCookies<T extends NextResponse>(response: T, headers: Headers): T {
+  for (const cookie of headers.getSetCookie()) {
+    response.headers.append('set-cookie', cookie);
+  }
+  return response;
 }
 
 // Всё, кроме статики, страницы входа и роутов Better Auth.

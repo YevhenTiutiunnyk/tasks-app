@@ -78,11 +78,39 @@ describe('proxy', () => {
     await expect(response.json()).resolves.toEqual({ error: 'Не авторизован' });
   });
 
+  it('доносит до ответа 401 очистку протухшей куки', async () => {
+    // Просроченная сессия — это тоже result.response === null, но
+    // getSession успевает до этого вызвать deleteSessionCookie и оставить
+    // в result.headers команду на удаление куки. Не перенеси мы её сюда —
+    // браузер держал бы мёртвую куку до собственного Max-Age (до 30 дней),
+    // и каждый запрос заново бил бы в базу.
+    getSession.mockResolvedValue(
+      sessionResult(null, ['zz.session_token=; Path=/; Max-Age=0; HttpOnly']),
+    );
+    const response = await proxy(new NextRequest('https://example.test/api/week'));
+    expect(response.status).toBe(401);
+    expect(response.headers.getSetCookie()).toEqual([
+      'zz.session_token=; Path=/; Max-Age=0; HttpOnly',
+    ]);
+  });
+
   it('уводит страницу на вход без сессии', async () => {
     getSession.mockResolvedValue(sessionResult(null));
     const response = await proxy(new NextRequest('https://example.test/settings'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe('https://example.test/login');
+  });
+
+  it('доносит до редиректа на вход очистку протухшей куки', async () => {
+    // Та же причина, что и в ветке 401 выше, но для страниц.
+    getSession.mockResolvedValue(
+      sessionResult(null, ['zz.session_token=; Path=/; Max-Age=0; HttpOnly']),
+    );
+    const response = await proxy(new NextRequest('https://example.test/settings'));
+    expect(response.status).toBe(307);
+    expect(response.headers.getSetCookie()).toEqual([
+      'zz.session_token=; Path=/; Max-Age=0; HttpOnly',
+    ]);
   });
 
   it('отвечает 503, а не редиректом, когда база недоступна', async () => {
