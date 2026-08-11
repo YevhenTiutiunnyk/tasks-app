@@ -2,6 +2,7 @@ import { betterAuth } from 'better-auth';
 import { APIError } from 'better-auth/api';
 import { Pool } from 'pg';
 import { getUserEmailById, isEmailAllowed } from './allowed-emails';
+import { EMAIL_NOT_ALLOWED_ERROR_CODE } from './auth-error-codes';
 
 const encoder = new TextEncoder();
 
@@ -81,7 +82,11 @@ export const auth = betterAuth({
    * Хук именно на сессии, а не на создании пользователя: создание срабатывает
    * один раз, и адрес, убранный из списка позже, продолжал бы пускать.
    *
-   * Отказ без подробностей о том, кто допущен.
+   * Отказ без подробностей о том, кто допущен: сообщение общее, а `code`
+   * нужен не для текста (текст по коду подбирает страница входа), а чтобы
+   * штатный обработчик колбэка вообще сделал редирект, а не отдал сырой
+   * JSON — он смотрит именно на `e.body?.code`
+   * (node_modules/better-auth/dist/api/routes/callback.mjs).
    */
   databaseHooks: {
     session: {
@@ -89,10 +94,23 @@ export const auth = betterAuth({
         before: async (session) => {
           const email = await getUserEmailById(session.userId);
           if (!email || !(await isEmailAllowed(email))) {
-            throw new APIError('FORBIDDEN', { message: 'Вход не разрешён' });
+            throw new APIError('FORBIDDEN', {
+              code: EMAIL_NOT_ALLOWED_ERROR_CODE,
+              message: 'Вход не разрешён',
+            });
           }
         },
       },
     },
+  },
+  /**
+   * Без этого редирект после отказа шёл бы на `${baseURL}/error`
+   * (node_modules/better-auth/dist/api/routes/callback.mjs:32) — а такой
+   * страницы в приложении нет, и человек вместо причины отказа увидел бы
+   * 404 Next.js. Ведём туда же, откуда пришли: страница входа сама умеет
+   * читать ?error= и показывать текст.
+   */
+  onAPIError: {
+    errorURL: '/login',
   },
 });
