@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { authClient } from '@/lib/auth-client';
 import { clockToMinutes, minutesToClock } from '@/lib/format';
 import PushToggle from '../push-toggle';
 import type { Settings } from '@/lib/types';
@@ -15,6 +16,8 @@ export default function SettingsPage() {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [signOutBusy, setSignOutBusy] = useState(false);
+  const [signOutError, setSignOutError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +76,25 @@ export default function SettingsPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function signOut() {
+    if (signOutBusy) return;
+    setSignOutBusy(true);
+    setSignOutError('');
+    const { error: failure } = await authClient.signOut();
+    // Бэкенд сообщает — экран молчит: та же серия дефектов, что и на
+    // странице входа. Полной перезагрузкой уходим только при успехе —
+    // при отказе состояние страницы остаётся прежним, человек всё ещё
+    // вошёл, и это надо показать, а не молча увести никуда.
+    if (failure) {
+      setSignOutError(failure.message ?? 'Не получилось выйти');
+      setSignOutBusy(false);
+      return;
+    }
+    // Полная перезагрузка, а не router.push: без неё в памяти страницы
+    // остались бы settings и прочее состояние предыдущего пользователя.
+    window.location.href = '/login';
   }
 
   return (
@@ -195,6 +217,20 @@ export default function SettingsPage() {
           {busy ? '…' : 'Сохранить'}
         </button>
         {status && <span className="text-xs text-muted">{status}</span>}
+      </div>
+
+      <div className="space-y-2 border-t border-hairline pt-4">
+        <button
+          onClick={() => void signOut()}
+          disabled={signOutBusy}
+          className="rounded-md border border-hairline bg-surface px-4 py-2 text-sm disabled:opacity-50"
+        >
+          {signOutBusy ? '…' : 'Выйти из аккаунта'}
+        </button>
+        <p className="text-xs text-muted">
+          Выход только с этого устройства — на остальных сессия останется.
+        </p>
+        {signOutError && <p className="text-xs text-red-600">{signOutError}</p>}
       </div>
     </main>
   );
