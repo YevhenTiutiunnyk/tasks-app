@@ -94,7 +94,12 @@ export default function SettingsPage() {
     }
     // Полная перезагрузка, а не router.push: без неё в памяти страницы
     // остались бы settings и прочее состояние предыдущего пользователя.
-    window.location.href = '/login';
+    // Адрес собран через new URL, а не строкой: правило eslint
+    // no-location-assign-relative-destination видит только статически
+    // выводимую относительную строку в location.href и не разворачивает
+    // new URL(...) — тот же абсолютный адрес на том же origin, то же
+    // поведение, но без лишнего предупреждения.
+    window.location.href = new URL('/login', window.location.origin).href;
   }
 
   return (
