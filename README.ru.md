@@ -113,9 +113,14 @@ RUN_LLM_TESTS=1 node --env-file=.env.local ./node_modules/vitest/vitest.mjs run 
 | Переменная | Что это |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Ключ с console.anthropic.com |
-| `APP_PASSWORD` | Пароль на входе в приложение |
-| `SESSION_SECRET` | Случайная строка от 32 символов для подписи куки |
 | `DATABASE_URL` | Транзакционный пулер Supabase, порт **6543** |
+| `BETTER_AUTH_URL` | Базовый адрес приложения, нужен для колбэков OAuth |
+| `BETTER_AUTH_SECRET` | Случайная строка от 32 символов, использует Better Auth |
+| `GOOGLE_CLIENT_ID` | ID OAuth-клиента из Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | Секрет OAuth-клиента из Google Cloud Console |
+
+Вход — через Google OAuth силами Better Auth (`lib/auth.ts`); сессию получают
+только адреса из таблицы `allowed_emails` (`lib/allowed-emails.ts`).
 
 Порт важен: на прямом соединении (5432) serverless-функции исчерпают лимит
 подключений. По той же причине пул создаётся с `prepare: false` — транзакционный

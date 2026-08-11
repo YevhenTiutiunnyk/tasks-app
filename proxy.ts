@@ -14,7 +14,21 @@ import { auth } from '@/lib/auth';
 // Это законно потому, что в Next 16 proxy по умолчанию работает на
 // Node-рантайме (опция runtime здесь запрещена и бросает ошибку).
 export async function proxy(request: NextRequest) {
-  const session = await auth.api.getSession({ headers: request.headers });
+  let session;
+  try {
+    session = await auth.api.getSession({ headers: request.headers });
+  } catch (error) {
+    // Лог без куки и заголовков: в них лежит содержимое сессии, а причина
+    // отказа — обрыв связи с базой — в них не написана и без утечки видна.
+    console.error('proxy: не удалось проверить сессию', error);
+    // Не редирект на /login: моргнувшая база выбросила бы на вход и уже
+    // вошедшего пользователя, а сам вход без базы тоже не сработает — это
+    // была бы дорога в никуда. 503 честно говорит, что дело не в сессии, и
+    // одинаков для страниц и для api — здесь, в отличие от развилки ниже,
+    // разбирать ответ на стороне клиента не нужно: это не отказ входа,
+    // а сообщение "попробуй позже" в любом виде.
+    return NextResponse.json({ error: 'Сервис временно недоступен' }, { status: 503 });
+  }
   if (session) {
     return NextResponse.next();
   }
