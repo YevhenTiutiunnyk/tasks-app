@@ -74,7 +74,7 @@ property appear in `required`.
 | Apply & undo | `lib/apply.ts` | Transaction, snapshot, batch rollback |
 | Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | The only places that know about Anthropic |
 | Data access | `lib/db.ts`, `lib/week.ts` | Queries and week assembly |
-| HTTP | `app/api/*` | Six routes: week, command, clarify, undo, tasks, settings |
+| HTTP | `app/api/*` | Nine routes: week, command, clarify, undo, task, settings, push, notify, auth |
 | UI | `app/page.tsx`, `components/*` | Grid, day feed, task card, command bar |
 
 Wide screens get a week grid with an hour ruler; narrow ones get a day feed. The
@@ -116,15 +116,28 @@ exactly that case.
 
 1. `npm install`
 2. Copy `.env.local.example` to `.env.local` and fill it in.
-3. Apply `supabase/migrations/0001_init.sql` in the Supabase SQL editor.
-4. `npm run dev`
+3. Apply all migrations from `supabase/migrations/` in the Supabase SQL editor,
+   in order: `0001_init.sql`, `0002_push.sql`, `0003_auth.sql`.
+4. Add your own Google address to the whitelist, in lower case — without this
+   row nobody can log in, and the login page says nothing about why:
+
+   ```sql
+   insert into allowed_emails (email) values ('you@example.com');
+   ```
+
+5. `npm run dev`
 
 | Variable | What it is |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Key from console.anthropic.com |
-| `APP_PASSWORD` | Password for the app's single login |
-| `SESSION_SECRET` | Random string, 32+ characters, used to sign the cookie |
 | `DATABASE_URL` | Supabase **transaction pooler**, port **6543** |
+| `BETTER_AUTH_URL` | Base URL of the app, used for OAuth callbacks |
+| `BETTER_AUTH_SECRET` | Random string, 32+ characters, used by Better Auth |
+| `GOOGLE_CLIENT_ID` | OAuth client ID from Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | OAuth client secret from Google Cloud Console |
+
+Login is Google OAuth via Better Auth (`lib/auth.ts`); only addresses listed in
+the `allowed_emails` table can get a session (`lib/allowed-emails.ts`).
 
 The port matters: on a direct connection (5432) serverless functions exhaust the
 connection limit. For the same reason the pool is created with `prepare: false` —

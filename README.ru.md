@@ -66,7 +66,7 @@ nullable, потому что структурированный вывод тр
 | Применение и откат | `lib/apply.ts` | Транзакция, слепок, откат пачки |
 | Обращения к модели | `lib/parse.ts`, `lib/parse-clarify.ts` | Единственные места, знающие про Anthropic |
 | Доступ к данным | `lib/db.ts`, `lib/week.ts` | Запросы и сборка недели |
-| HTTP | `app/api/*` | Шесть роутов: неделя, команда, уточнение, отмена, задачи, настройки |
+| HTTP | `app/api/*` | Девять роутов: неделя, команда, уточнение, отмена, задачи, настройки, подписка, рассылка, вход |
 | Экран | `app/page.tsx`, `components/*` | Сетка, лента, карточка, строка ввода |
 
 Широкий экран показывает недельную сетку с часовой линейкой, узкий —
@@ -107,15 +107,28 @@ RUN_LLM_TESTS=1 node --env-file=.env.local ./node_modules/vitest/vitest.mjs run 
 
 1. `npm install`
 2. Скопировать `.env.local.example` в `.env.local` и заполнить.
-3. Применить `supabase/migrations/0001_init.sql` в SQL-редакторе Supabase.
-4. `npm run dev`
+3. Применить в SQL-редакторе Supabase все миграции из `supabase/migrations/`
+   по порядку: `0001_init.sql`, `0002_push.sql`, `0003_auth.sql`.
+4. Вписать свой адрес Google в белый список, в нижнем регистре — без этой
+   строки не войдёт никто, и страница входа о причине не скажет:
+
+   ```sql
+   insert into allowed_emails (email) values ('you@example.com');
+   ```
+
+5. `npm run dev`
 
 | Переменная | Что это |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Ключ с console.anthropic.com |
-| `APP_PASSWORD` | Пароль на входе в приложение |
-| `SESSION_SECRET` | Случайная строка от 32 символов для подписи куки |
 | `DATABASE_URL` | Транзакционный пулер Supabase, порт **6543** |
+| `BETTER_AUTH_URL` | Базовый адрес приложения, нужен для колбэков OAuth |
+| `BETTER_AUTH_SECRET` | Случайная строка от 32 символов, использует Better Auth |
+| `GOOGLE_CLIENT_ID` | ID OAuth-клиента из Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | Секрет OAuth-клиента из Google Cloud Console |
+
+Вход — через Google OAuth силами Better Auth (`lib/auth.ts`); сессию получают
+только адреса из таблицы `allowed_emails` (`lib/allowed-emails.ts`).
 
 Порт важен: на прямом соединении (5432) serverless-функции исчерпают лимит
 подключений. По той же причине пул создаётся с `prepare: false` — транзакционный
