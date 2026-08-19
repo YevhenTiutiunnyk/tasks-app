@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { applyOperations, undoBatch } from './apply';
 import { getTasksBetween, sql } from './db';
 import type { Operation } from './types';
@@ -9,9 +9,12 @@ const FROM = '2030-01-07';   // понедельник, заведомо пус�
 const TO = '2030-01-13';
 
 // Владелец нужен чтению уже сейчас, а applyOperations научится его писать
-// только в задаче 3 — до неё эти тесты падают на пустой выборке. Свой
-// пользователь с этим адресом и адресная чистка журнала — задача 6; здесь
-// сознательно только то, без чего файл не компилируется.
+// только в задаче 3 — до неё эти тесты падают на пустой выборке. Адресная
+// чистка журнала — задача 6.
+//
+// Пользователь заводится по-настоящему, а не только называется: tasks.user_id —
+// внешний ключ на "user"(id), и как только задача 3 начнёт его писать, вставка
+// без этой строки упала бы на нарушении ссылки.
 const OWNER = 'zz-apply@example.invalid';
 
 function create(title: string, date: string, startMinute: number | null): Operation {
@@ -29,8 +32,19 @@ async function clean() {
 }
 
 run('applyOperations', () => {
+  beforeAll(async () => {
+    await sql`
+      insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      values (${OWNER}, ${OWNER}, ${OWNER}, false, now(), now())
+      on conflict (id) do nothing
+    `;
+  });
+
   afterAll(async () => {
     await clean();
+    // Строку пользователя — после clean: ссылки на неё стоят с on delete
+    // restrict, и убрать её раньше задач не выйдет. Адресно, по своему адресу.
+    await sql`delete from "user" where email = ${OWNER}`;
     await sql.end();
   });
 
