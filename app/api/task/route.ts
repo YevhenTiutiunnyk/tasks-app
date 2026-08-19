@@ -25,7 +25,7 @@ async function applyOrConflict(
   today: string,
 ) {
   try {
-    const { batchId } = await applyOperations(text, operations);
+    const { batchId } = await applyOperations(userId, text, operations);
     return respond(userId, today, batchId);
   } catch (error) {
     console.error('applyOperations failed', error);
@@ -97,7 +97,13 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
-    await sql`update tasks set done = ${body.done}, updated_at = now() where id = ${body.taskId}`;
+    // Чужая задача не находится и ответ тот же, что на уже удалённую: 200
+    // с текущей неделей. Отдельного «не твоё» нет намеренно — по нему
+    // перебором вычислялось бы, какие задачи есть у других.
+    await sql`
+      update tasks set done = ${body.done}, updated_at = now()
+      where id = ${body.taskId} and user_id = ${user.userId}
+    `;
     return respond(user.userId, body.today, null);
   }
 
@@ -128,7 +134,10 @@ export async function PATCH(request: Request) {
     if (body.allDay != null) patch.all_day = body.allDay;
     if (body.categoryId !== undefined) patch.category_id = body.categoryId;
     if (Object.keys(patch).length > 0) {
-      await sql`update recurrences set ${sql(patch)} where id = ${occurrence.recurrenceId}`;
+      await sql`
+        update recurrences set ${sql(patch)}
+        where id = ${occurrence.recurrenceId} and user_id = ${user.userId}
+      `;
     }
     return respond(user.userId, body.today, null);
   }
@@ -166,7 +175,12 @@ export async function DELETE(request: Request) {
 
   const occurrence = parseOccurrenceId(body.taskId);
   if (body.scope === 'series' && occurrence) {
-    await sql`delete from recurrences where id = ${occurrence.recurrenceId}`;
+    // Без владельца это была бы худшая дыра из всех: удаление правила уносит
+    // каскадом и все материализованные по нему задачи чужого человека.
+    await sql`
+      delete from recurrences
+      where id = ${occurrence.recurrenceId} and user_id = ${user.userId}
+    `;
     return respond(user.userId, body.today, null);
   }
 

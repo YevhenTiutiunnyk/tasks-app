@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from './db';
 import {
   getExceptions,
@@ -11,6 +11,32 @@ import {
 } from './db';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import { loadRange, loadWeek } from './week';
+import { applyOperations, undoBatch } from './apply';
+
+// Владельца запроса в роутах даёт сессия better-auth. Поднимать её ради
+// проверки фильтров в SQL незачем — подменяем помощника целиком и называем
+// владельца прямо в тесте. vi.hoisted нужен потому, что vi.mock поднимается
+// выше импортов: фабрика не увидела бы обычную переменную модуля.
+const session = vi.hoisted(() => ({ userId: '' }));
+vi.mock('./require-user', () => ({
+  requireUser: async () => ({ userId: session.userId }),
+}));
+
+// Разбор уточнения ходит в модель. Здесь важно не что он ответит, а был ли
+// он вызван вообще: по чужой задаче до него дойти не должно.
+const clarify = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('./parse-clarify', () => ({
+  parseClarification: async () => {
+    clarify.calls += 1;
+    return { date: '2030-03-04', startMinute: 600, durationMinutes: 60 };
+  },
+}));
+
+// Роуты импортируются после vi.mock намеренно: подмена должна быть объявлена
+// раньше, чем модуль роута потянет за собой настоящий require-user.
+import { PATCH as taskPatch, DELETE as taskDelete } from '@/app/api/task/route';
+import { POST as clarifyPost } from '@/app/api/clarify/route';
+import { POST as undoPost } from '@/app/api/undo/route';
 
 // Тестовые пользователи заводятся в БОЕВОЙ таблице "user" — другой базы нет.
 // Домен .invalid зарезервирован стандартом и не может принадлежать человеку.
@@ -25,6 +51,13 @@ const C = 'zz-owner-c@example.invalid';
 // Оба понедельника: правило с weekdays [1] попадает ровно на них.
 const DATE = '2030-03-04';
 const NEXT = '2030-03-11';
+// Ещё два понедельника той же серии — для материализации вхождений. На NEXT
+// у обоих правил стоит исключение, поэтому брать его для этих проверок нельзя.
+const THIRD = '2030-03-18';
+const FOURTH = '2030-03-25';
+// Отдельная дата под откат удаления: соседние проверки считают задачи
+// на FOURTH поимённо, и восстановленная строка сбивала бы им счёт.
+const FIFTH = '2030-04-01';
 
 // Как в lib/db.test.ts и lib/apply.test.ts: без строки подключения файл
 // пропускается, а не падает на первом же запросе. Полный прогон становится
@@ -52,6 +85,10 @@ const SETTINGS_B = {
 async function clean() {
   // Порядок продиктован ссылками: исключения висят на правилах, а настройки
   // и всё остальное — на пользователе с on delete restrict.
+  // Журнал чистится здесь, а не только в afterAll: у command_log.user_id
+  // ссылка на "user" с on delete restrict, и оставшаяся от оборванного
+  // прогона запись не дала бы удалить пользователя уже в beforeAll.
+  await sql`delete from command_log where user_id in (${idA}, ${idB}, ${idC})`;
   await sql`delete from recurrence_exceptions where recurrence_id in (
     select id from recurrences where user_id in (${idA}, ${idB}, ${idC})
   )`;
@@ -61,7 +98,10 @@ async function clean() {
   await sql`delete from "user" where email in (${A}, ${B}, ${C})`;
 }
 
-run('изоляция чтения', () => {
+// Один внешний блок на чтение и на запись: пользователи, задачи и правила
+// заводятся один раз, и sql.end() тоже один — вынеси запись отдельным
+// describe верхнего уровня, и соединение закрылось бы до её первого запроса.
+run('изоляция по владельцу', () => {
   beforeAll(async () => {
     idA = A;
     idB = B;
@@ -207,5 +247,338 @@ run('изоляция чтения', () => {
     await saveTimezone(idA, 'Asia/Tokyo');
     await saveSettings(idA, { ...DEFAULT_SETTINGS, aboutMe: 'ZZ-проверка пояса' });
     expect(await getTimezone(idA)).toBe('Asia/Tokyo');
+  });
+
+  /** Разовая задача A из beforeAll — опора для проверок «чужое не трогается». */
+  async function taskOfA() {
+    const [row] = await sql`
+      select id, title, done from tasks where user_id = ${idA} and title = 'ZZ-задача A'
+    `;
+    return row;
+  }
+
+  function createOp(title: string, date: string) {
+    return {
+      type: 'create' as const,
+      title,
+      date,
+      startMinute: null,
+      durationMinutes: null,
+      allDay: true,
+      categoryId: null,
+      recurrence: null,
+    };
+  }
+
+  describe('изоляция записи', () => {
+    it('правка по чужому идентификатору не задевает ни строки', async () => {
+      const [mine] = await sql`
+        select id from tasks where user_id = ${idB} and date = ${DATE}
+      `;
+      const changed = await sql`
+        update tasks set title = 'ZZ-угнано' where id = ${mine.id} and user_id = ${idA}
+      `;
+      expect(changed.count).toBe(0);
+      const [after] = await sql`select title from tasks where id = ${mine.id}`;
+      expect(after.title).toBe('ZZ-задача B');
+    });
+
+    it('созданное одной пачкой достаётся только её владельцу', async () => {
+      // Задача и правило разом: колонка владельца добавляется в обе вставки,
+      // и потерянная в любой из них видна здесь, а не только на бою.
+      const { batchId } = await applyOperations(idA, 'ZZ-создание A', [
+        createOp('ZZ-новая A', FOURTH),
+        {
+          type: 'create',
+          title: 'ZZ-новое правило A',
+          date: null,
+          startMinute: 480,
+          durationMinutes: 60,
+          allDay: false,
+          categoryId: null,
+          recurrence: { weekdays: [3], startsOn: FOURTH, endsOn: null },
+        },
+      ]);
+
+      expect((await getTasksBetween(idA, FOURTH, FOURTH)).map((t) => t.title))
+        .toEqual(['ZZ-новая A']);
+      expect(await getTasksBetween(idB, FOURTH, FOURTH)).toEqual([]);
+      expect((await getRecurrences(idA)).map((r) => r.title))
+        .toEqual(['ZZ-правило A', 'ZZ-новое правило A']);
+      expect((await getRecurrences(idB)).map((r) => r.title)).toEqual(['ZZ-правило B']);
+
+      await undoBatch(idA, batchId);
+    });
+
+    it('откат видит только свои пачки', async () => {
+      // У варианта create в типе Operation обязательны все семь полей —
+      // необязательных там нет, частичный объект не скомпилируется.
+      const { batchId } = await applyOperations(idA, 'ZZ-пачка A', [
+        {
+          type: 'create',
+          title: 'ZZ-из пачки A',
+          date: DATE,
+          startMinute: null,
+          durationMinutes: null,
+          allDay: true,
+          categoryId: null,
+          recurrence: null,
+        },
+      ]);
+      // Чужой идентификатор пачки не должен откатываться под другим владельцем.
+      expect(await undoBatch(idB, batchId)).toBe(false);
+      expect(await undoBatch(idA, batchId)).toBe(true);
+    });
+
+    it('откат удаления возвращает задачу владельцу, а не в никуда', async () => {
+      // Единственный путь, где строка задачи заводится заново, а не правится:
+      // откат удаления вставляет её из снимка. Владельца снимок не хранит —
+      // забудь колонку в этой вставке, и задача вернётся ничьей: её не увидит
+      // и тот, кто нажал «отменить», причём молча.
+      await applyOperations(idA, 'ZZ-создать под удаление', [createOp('ZZ-вернётся', FIFTH)]);
+      const [created] = await getTasksBetween(idA, FIFTH, FIFTH);
+      const { batchId } = await applyOperations(idA, 'ZZ-удалить', [
+        { type: 'delete', taskId: created.id },
+      ]);
+      expect(await getTasksBetween(idA, FIFTH, FIFTH)).toEqual([]);
+
+      expect(await undoBatch(idA, batchId)).toBe(true);
+      expect((await getTasksBetween(idA, FIFTH, FIFTH)).map((t) => t.id)).toEqual([created.id]);
+      expect(await getTasksBetween(idB, FIFTH, FIFTH)).toEqual([]);
+    });
+
+    it('правка чужой задачи не проходит и отвечает как на несуществующую', async () => {
+      const task = await taskOfA();
+      await expect(
+        applyOperations(idB, 'ZZ-угон правкой', [
+          {
+            type: 'update', taskId: task.id, title: 'ZZ-угнано', date: null,
+            startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+          },
+        ]),
+      ).rejects.toThrow();
+      expect((await taskOfA()).title).toBe('ZZ-задача A');
+    });
+
+    it('удаление чужой задачи не проходит', async () => {
+      const task = await taskOfA();
+      await expect(
+        applyOperations(idB, 'ZZ-угон удалением', [{ type: 'delete', taskId: task.id }]),
+      ).rejects.toThrow();
+      expect(await taskOfA()).toBeDefined();
+    });
+
+    it('чужое вхождение серии не материализуется', async () => {
+      // Самое дорогое из возможного: без владельца в выборке правила B создал бы
+      // себе задачу от правила A и заодно поставил бы на неё исключение —
+      // занятие пропало бы из календаря A само собой.
+      await expect(
+        applyOperations(idB, 'ZZ-угон серии', [
+          {
+            type: 'update', taskId: `occ:${ruleA}:${THIRD}`, title: 'ZZ-угнано', date: null,
+            startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+          },
+        ]),
+      ).rejects.toThrow();
+      const [exceptions] = await sql`
+        select count(*)::int c from recurrence_exceptions
+        where recurrence_id = ${ruleA} and date = ${THIRD}
+      `;
+      expect(exceptions.c).toBe(0);
+      const [spawned] = await sql`
+        select count(*)::int c from tasks where recurrence_id = ${ruleA}
+      `;
+      expect(spawned.c).toBe(0);
+    });
+
+    it('своё вхождение материализуется с владельцем', async () => {
+      await applyOperations(idA, 'ZZ-перенос вхождения', [
+        {
+          type: 'update', taskId: `occ:${ruleA}:${THIRD}`, title: 'ZZ-своё вхождение',
+          date: null, startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        },
+      ]);
+      expect((await getTasksBetween(idA, THIRD, THIRD)).map((t) => t.title))
+        .toEqual(['ZZ-своё вхождение']);
+      // Без владельца в insert строка не принадлежала бы никому и пропала бы
+      // из календаря самого A — а не только осталась бы невидимой для B.
+      expect(await getTasksBetween(idB, THIRD, THIRD)).toEqual([]);
+    });
+
+    it('уже материализованное чужое вхождение не подхватывается', async () => {
+      // Продолжение предыдущего: задача от правила A теперь существует, и поиск
+      // «уже материализовано?» нашёл бы её и без фильтра по владельцу.
+      await expect(
+        applyOperations(idB, 'ZZ-угон материализованного', [
+          {
+            type: 'update', taskId: `occ:${ruleA}:${THIRD}`, title: 'ZZ-угнано', date: null,
+            startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+          },
+        ]),
+      ).rejects.toThrow();
+      expect((await getTasksBetween(idA, THIRD, THIRD)).map((t) => t.title))
+        .toEqual(['ZZ-своё вхождение']);
+    });
+  });
+
+  describe('изоляция записи в роутах', () => {
+    function request(url: string, method: string, body: unknown) {
+      return new Request(url, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('«выполнено» по чужой задаче ничего не меняет', async () => {
+      const task = await taskOfA();
+      expect(task.done).toBe(false);
+      session.userId = idB;
+      const response = await taskPatch(
+        request('http://t/api/task', 'PATCH', { today: DATE, taskId: task.id, done: true }),
+      );
+      expect(response.status).toBe(200);
+      expect((await taskOfA()).done).toBe(false);
+    });
+
+    it('правка серии по чужому правилу ничего не меняет', async () => {
+      session.userId = idB;
+      const response = await taskPatch(
+        request('http://t/api/task', 'PATCH', {
+          today: DATE, taskId: `occ:${ruleA}:${DATE}`, scope: 'series', title: 'ZZ-угнано',
+        }),
+      );
+      expect(response.status).toBe(200);
+      const [rule] = await sql`select title from recurrences where id = ${ruleA}`;
+      expect(rule.title).toBe('ZZ-правило A');
+    });
+
+    it('удаление серии по чужому правилу ничего не удаляет', async () => {
+      session.userId = idB;
+      const response = await taskDelete(
+        request('http://t/api/task', 'DELETE', {
+          today: DATE, taskId: `occ:${ruleA}:${DATE}`, scope: 'series',
+        }),
+      );
+      expect(response.status).toBe(200);
+      const [rule] = await sql`select count(*)::int c from recurrences where id = ${ruleA}`;
+      expect(rule.c).toBe(1);
+    });
+
+    it('уточнение по чужой задаче даже не доходит до разбора', async () => {
+      const task = await taskOfA();
+      clarify.calls = 0;
+
+      session.userId = idB;
+      const foreign = await clarifyPost(
+        request('http://t/api/clarify', 'POST', {
+          today: DATE, answers: [{ taskId: task.id, text: 'ZZ-в десять' }],
+        }),
+      );
+      expect(await foreign.json()).toMatchObject({ failed: [] });
+      // Ноль вызовов — единственный признак, отличающий «не нашлось» от
+      // «нашлось чужое, но правка не применилась»: ответ у них одинаковый.
+      expect(clarify.calls).toBe(0);
+
+      // Контроль на то, что подмена вообще работает и путь живой.
+      session.userId = idA;
+      await clarifyPost(
+        request('http://t/api/clarify', 'POST', {
+          today: DATE, answers: [{ taskId: task.id, text: 'ZZ-в десять' }],
+        }),
+      );
+      expect(clarify.calls).toBe(1);
+      const [after] = await sql`select start_minute from tasks where id = ${task.id}`;
+      expect(after.start_minute).toBe(600);
+    });
+
+    it('свежая чужая пачка не мешает отменить свою', async () => {
+      // Роут отменяет только самую свежую пачку. Считать «самую свежую»
+      // по всему журналу значит: пока другой отдаёт команды, отмена
+      // не работает ни у кого, кроме него.
+      const { batchId: batchA } = await applyOperations(idA, 'ZZ-своя пачка', [
+        createOp('ZZ-своя', FOURTH),
+      ]);
+      const { batchId: batchB } = await applyOperations(idB, 'ZZ-чужая пачка', [
+        createOp('ZZ-чужая', FOURTH),
+      ]);
+
+      session.userId = idA;
+      const mine = await undoPost(
+        request('http://t/api/undo', 'POST', { batchId: batchA, today: FOURTH }),
+      );
+      expect(await mine.json()).toMatchObject({ undone: true });
+
+      session.userId = idB;
+      const theirs = await undoPost(
+        request('http://t/api/undo', 'POST', { batchId: batchB, today: FOURTH }),
+      );
+      expect(await theirs.json()).toMatchObject({ undone: true });
+      expect(await getTasksBetween(idA, FOURTH, FOURTH)).toEqual([]);
+      expect(await getTasksBetween(idB, FOURTH, FOURTH)).toEqual([]);
+    });
+
+    it('чужую пачку откатить нельзя', async () => {
+      const { batchId } = await applyOperations(idA, 'ZZ-пачка под откат', [
+        createOp('ZZ-не отдам', FOURTH),
+      ]);
+      session.userId = idB;
+      const response = await undoPost(
+        request('http://t/api/undo', 'POST', { batchId, today: FOURTH }),
+      );
+      expect(await response.json()).toMatchObject({ undone: false });
+      expect((await getTasksBetween(idA, FOURTH, FOURTH)).map((t) => t.title))
+        .toEqual(['ZZ-не отдам']);
+    });
+  });
+
+  // Отдельным блоком и последним: тест засевает журнал десятками строк
+  // и вычищает его у A и B, поэтому идти он должен после всех остальных.
+  describe('обрезка журнала', () => {
+    it('оставляет по пятьдесят записей каждому, а не пятьдесят на всех', async () => {
+      const [before] = await sql`
+        select count(*)::int c from command_log
+        where user_id is distinct from ${idA} and user_id is distinct from ${idB}
+      `;
+
+      await sql`delete from command_log where user_id in (${idA}, ${idB})`;
+      // Засеваем напрямую: пятьдесят вызовов applyOperations — это пятьдесят
+      // транзакций к боевой базе. created_at в далёком прошлом не для красоты:
+      // сломай фильтр, и под глобальную обрезку первыми пойдут именно эти
+      // строки, а живой журнал владельца расписания останется целым.
+      await sql`
+        insert into command_log (text, operations, snapshot, created_at, user_id)
+        select 'ZZ-журнал A', '[]'::jsonb,
+               '{"tasks":[],"recurrences":[],"exceptions":[]}'::jsonb,
+               timestamptz '2020-01-01 00:00:00+00' + (n * interval '1 minute'), ${idA}
+        from generate_series(1, 51) as n
+      `;
+      await sql`
+        insert into command_log (text, operations, snapshot, created_at, user_id)
+        values ('ZZ-журнал B', '[]'::jsonb,
+                '{"tasks":[],"recurrences":[],"exceptions":[]}'::jsonb,
+                timestamptz '2019-01-01 00:00:00+00', ${idB})
+      `;
+
+      const { batchId } = await applyOperations(idA, 'ZZ-обрезка', [
+        createOp('ZZ-после обрезки', FOURTH),
+      ]);
+
+      const [mine] = await sql`select count(*)::int c from command_log where user_id = ${idA}`;
+      expect(mine.c).toBe(50);
+      // Самая старая запись во всём журнале — и всё равно не тронута:
+      // чужая история отмены не вытесняется чужой активностью.
+      const [theirs] = await sql`select count(*)::int c from command_log where user_id = ${idB}`;
+      expect(theirs.c).toBe(1);
+      // Свежая пачка обязана уцелеть — иначе отменять было бы нечего.
+      const [kept] = await sql`select count(*)::int c from command_log where id = ${batchId}`;
+      expect(kept.c).toBe(1);
+
+      const [after] = await sql`
+        select count(*)::int c from command_log
+        where user_id is distinct from ${idA} and user_id is distinct from ${idB}
+      `;
+      expect(after.c).toBe(before.c);
+    });
   });
 });

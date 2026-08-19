@@ -70,7 +70,7 @@ export async function POST(request: Request) {
 
   let batchId: string;
   try {
-    ({ batchId } = await applyOperations(text, checked.operations));
+    ({ batchId } = await applyOperations(user.userId, text, checked.operations));
   } catch (error) {
     console.error('applyOperations failed', error);
     return NextResponse.json({ error: 'Не получилось сохранить изменения' }, { status: 500 });

@@ -29,7 +29,12 @@ export async function POST(request: Request) {
   const failed: string[] = [];
 
   for (const answer of answers) {
-    const [row] = await sql`select * from tasks where id = ${answer.taskId}`;
+    // Чужая задача пропускается ровно так же, как несуществующая, и до разбора
+    // фразы моделью дело не доходит. Ответь роут по-разному — и перебором
+    // идентификаторов узнавалось бы, что вообще есть в чужом расписании.
+    const [row] = await sql`
+      select * from tasks where id = ${answer.taskId} and user_id = ${user.userId}
+    `;
     if (!row) continue;
 
     let slot;
@@ -53,7 +58,7 @@ export async function POST(request: Request) {
         duration_minutes = ${slot.durationMinutes},
         all_day = false,
         updated_at = now()
-      where id = ${answer.taskId}
+      where id = ${answer.taskId} and user_id = ${user.userId}
     `;
   }
 
