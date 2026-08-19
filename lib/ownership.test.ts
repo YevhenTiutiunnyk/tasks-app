@@ -9,13 +9,18 @@ import {
   saveSettings,
   saveTimezone,
 } from './db';
-import { DEFAULT_SETTINGS } from './settings-defaults';
+import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import { loadRange, loadWeek } from './week';
 
 // Тестовые пользователи заводятся в БОЕВОЙ таблице "user" — другой базы нет.
 // Домен .invalid зарезервирован стандартом и не может принадлежать человеку.
 const A = 'zz-owner-a@example.invalid';
 const B = 'zz-owner-b@example.invalid';
+// Третий нужен ровно для одного случая: человек, у которого строки настроек
+// нет вовсе. У A и B она к тому моменту уже есть, а путь «телефон прислал
+// пояс раньше, чем настройки хоть раз сохранили» — это первая команда
+// любого нового человека, и без C он не проверялся бы ничем.
+const C = 'zz-owner-c@example.invalid';
 // Диапазон 2030 года — как в lib/apply.test.ts, чтобы не пересечься с живыми.
 // Оба понедельника: правило с weekdays [1] попадает ровно на них.
 const DATE = '2030-03-04';
@@ -28,6 +33,7 @@ const run = process.env.DATABASE_URL ? describe : describe.skip;
 
 let idA = '';
 let idB = '';
+let idC = '';
 let ruleA = '';
 let ruleB = '';
 
@@ -47,25 +53,28 @@ async function clean() {
   // Порядок продиктован ссылками: исключения висят на правилах, а настройки
   // и всё остальное — на пользователе с on delete restrict.
   await sql`delete from recurrence_exceptions where recurrence_id in (
-    select id from recurrences where user_id in (${idA}, ${idB})
+    select id from recurrences where user_id in (${idA}, ${idB}, ${idC})
   )`;
-  await sql`delete from tasks where user_id in (${idA}, ${idB})`;
-  await sql`delete from recurrences where user_id in (${idA}, ${idB})`;
-  await sql`delete from user_settings where user_id in (${idA}, ${idB})`;
-  await sql`delete from "user" where email in (${A}, ${B})`;
+  await sql`delete from tasks where user_id in (${idA}, ${idB}, ${idC})`;
+  await sql`delete from recurrences where user_id in (${idA}, ${idB}, ${idC})`;
+  await sql`delete from user_settings where user_id in (${idA}, ${idB}, ${idC})`;
+  await sql`delete from "user" where email in (${A}, ${B}, ${C})`;
 }
 
 run('изоляция чтения', () => {
   beforeAll(async () => {
     idA = A;
     idB = B;
-    // Чистка ДО, а не только после: жёсткий обрыв прогона оставит двух лишних
+    idC = C;
+    // Чистка ДО, а не только после: жёсткий обрыв прогона оставит лишних
     // в "user", и это не косметика — getSoleUserId вернёт null и планировщик
     // молча замолчит, а предохранитель «ровно одна строка» в фазах 2 и 3
     // миграции откажется работать.
     await clean();
 
-    for (const email of [A, B]) {
+    // C заводится только в "user": ни задач, ни правил, ни настроек —
+    // в этом весь смысл, он остаётся человеком без строки в user_settings.
+    for (const email of [A, B, C]) {
       await sql`
         insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
         values (${email}, ${email}, ${email}, false, now(), now())
@@ -175,6 +184,18 @@ run('изоляция чтения', () => {
     await saveTimezone(idB, 'America/Bogota');
     expect(await getTimezone(idA)).toBe('Asia/Tokyo');
     expect(await getTimezone(idB)).toBe('America/Bogota');
+  });
+
+  it('пояс сохраняется, когда строки настроек ещё нет', async () => {
+    // Путь первой команды нового человека: телефон присылает пояс раньше,
+    // чем настройки хоть раз сохраняли, — строку заводит сам saveTimezone.
+    // У A и B строка к этому моменту уже есть, поэтому ветка вставки без
+    // отдельного человека не проверялась бы вовсе.
+    expect(await getTimezone(idC)).toBe(DEFAULT_TIMEZONE);
+    await saveTimezone(idC, 'Pacific/Auckland');
+    expect(await getTimezone(idC)).toBe('Pacific/Auckland');
+    // Остальные колонки новой строки — умолчания, а не выдумка на месте.
+    expect(await getSettings(idC)).toEqual(DEFAULT_SETTINGS);
   });
 
   it('сохранение настроек не затирает присланный телефоном пояс', async () => {
