@@ -3,13 +3,14 @@ import { isValidIsoDate } from '@/lib/dates';
 import { sql } from '@/lib/db';
 import { applyOperations } from '@/lib/apply';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import { isValidSlot, isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseOccurrenceId } from '@/lib/recurrence';
 import type { Operation } from '@/lib/types';
 
-async function respond(today: string, batchId: string | null) {
-  return NextResponse.json({ batchId, week: await loadWeek(today) });
+async function respond(userId: string, today: string, batchId: string | null) {
+  return NextResponse.json({ batchId, week: await loadWeek(userId, today) });
 }
 
 /**
@@ -17,10 +18,15 @@ async function respond(today: string, batchId: string | null) {
  * по «удалить» или на устаревшей вкладке. Это не сбой сервера, а гонка,
  * поэтому отвечаем 409, а не 500.
  */
-async function applyOrConflict(text: string, operations: Operation[], today: string) {
+async function applyOrConflict(
+  userId: string,
+  text: string,
+  operations: Operation[],
+  today: string,
+) {
   try {
     const { batchId } = await applyOperations(text, operations);
-    return respond(today, batchId);
+    return respond(userId, today, batchId);
   } catch (error) {
     console.error('applyOperations failed', error);
     return NextResponse.json({ error: 'Задача изменилась или уже удалена' }, { status: 409 });
@@ -28,6 +34,9 @@ async function applyOrConflict(text: string, operations: Operation[], today: str
 }
 
 export async function POST(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     today: string;
     title: string;
@@ -52,10 +61,13 @@ export async function POST(request: Request) {
     durationMinutes: body.durationMinutes, allDay: body.allDay,
     categoryId: body.categoryId, recurrence: null,
   };
-  return applyOrConflict('создано вручную', [operation], body.today);
+  return applyOrConflict(user.userId, 'создано вручную', [operation], body.today);
 }
 
 export async function PATCH(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     today: string;
     taskId: string;
@@ -86,7 +98,7 @@ export async function PATCH(request: Request) {
       );
     }
     await sql`update tasks set done = ${body.done}, updated_at = now() where id = ${body.taskId}`;
-    return respond(body.today, null);
+    return respond(user.userId, body.today, null);
   }
 
   // Название проверяем до ветки серии: иначе title "   " записался бы прямо
@@ -118,7 +130,7 @@ export async function PATCH(request: Request) {
     if (Object.keys(patch).length > 0) {
       await sql`update recurrences set ${sql(patch)} where id = ${occurrence.recurrenceId}`;
     }
-    return respond(body.today, null);
+    return respond(user.userId, body.today, null);
   }
 
   // Карточка задачи присылает все поля разом и просит полную замену
@@ -136,10 +148,13 @@ export async function PATCH(request: Request) {
     allDay: body.allDay ?? null,
     categoryId: body.categoryId ?? null,
   };
-  return applyOrConflict('изменено вручную', [operation], body.today);
+  return applyOrConflict(user.userId, 'изменено вручную', [operation], body.today);
 }
 
 export async function DELETE(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     today: string;
     taskId: string;
@@ -152,8 +167,10 @@ export async function DELETE(request: Request) {
   const occurrence = parseOccurrenceId(body.taskId);
   if (body.scope === 'series' && occurrence) {
     await sql`delete from recurrences where id = ${occurrence.recurrenceId}`;
-    return respond(body.today, null);
+    return respond(user.userId, body.today, null);
   }
 
-  return applyOrConflict('удалено вручную', [{ type: 'delete', taskId: body.taskId }], body.today);
+  return applyOrConflict(
+    user.userId, 'удалено вручную', [{ type: 'delete', taskId: body.taskId }], body.today,
+  );
 }

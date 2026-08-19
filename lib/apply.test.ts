@@ -8,6 +8,12 @@ const run = process.env.DATABASE_URL ? describe : describe.skip;
 const FROM = '2030-01-07';   // понедельник, заведомо пустая неделя
 const TO = '2030-01-13';
 
+// Владелец нужен чтению уже сейчас, а applyOperations научится его писать
+// только в задаче 3 — до неё эти тесты падают на пустой выборке. Свой
+// пользователь с этим адресом и адресная чистка журнала — задача 6; здесь
+// сознательно только то, без чего файл не компилируется.
+const OWNER = 'zz-apply@example.invalid';
+
 function create(title: string, date: string, startMinute: number | null): Operation {
   return {
     type: 'create', title, date, startMinute,
@@ -31,7 +37,7 @@ run('applyOperations', () => {
   it('создаёт задачу', async () => {
     await clean();
     await applyOperations('в среду в 10 врач', [create('Врач', '2030-01-09', 600)]);
-    const tasks = await getTasksBetween(FROM, TO);
+    const tasks = await getTasksBetween(OWNER, FROM, TO);
     expect(tasks).toHaveLength(1);
     expect(tasks[0].title).toBe('Врач');
     expect(tasks[0].startMinute).toBe(600);
@@ -40,14 +46,14 @@ run('applyOperations', () => {
   it('переносит задачу', async () => {
     await clean();
     await applyOperations('создать', [create('Врач', '2030-01-09', 600)]);
-    const [task] = await getTasksBetween(FROM, TO);
+    const [task] = await getTasksBetween(OWNER, FROM, TO);
     await applyOperations('перенеси врача на пятницу', [
       {
         type: 'update', taskId: task.id, title: null, date: '2030-01-11',
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
       },
     ]);
-    const [moved] = await getTasksBetween(FROM, TO);
+    const [moved] = await getTasksBetween(OWNER, FROM, TO);
     expect(moved.date).toBe('2030-01-11');
     expect(moved.startMinute).toBe(600);   // время не трогали
   });
@@ -55,9 +61,9 @@ run('applyOperations', () => {
   it('удаляет задачу', async () => {
     await clean();
     await applyOperations('создать', [create('Врач', '2030-01-09', 600)]);
-    const [task] = await getTasksBetween(FROM, TO);
+    const [task] = await getTasksBetween(OWNER, FROM, TO);
     await applyOperations('удали врача', [{ type: 'delete', taskId: task.id }]);
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
   });
 
   it('создаёт правило повтора вместо задачи', async () => {
@@ -72,7 +78,7 @@ run('applyOperations', () => {
     const rules = await sql`select * from recurrences where starts_on = '2030-01-07'`;
     expect(rules).toHaveLength(1);
     expect(rules[0].title).toBe('Зал');
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
   });
 
   it('материализует вхождение серии при удалении', async () => {
@@ -98,18 +104,18 @@ run('applyOperations', () => {
       create('Первая', '2030-01-08', 540),
       create('Вторая', '2030-01-08', 660),
     ]);
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(2);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(2);
     expect(await undoBatch(batchId)).toBe(true);
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
   });
 
   it('откат возвращает удалённую задачу', async () => {
     await clean();
     await applyOperations('создать', [create('Врач', '2030-01-09', 600)]);
-    const [task] = await getTasksBetween(FROM, TO);
+    const [task] = await getTasksBetween(OWNER, FROM, TO);
     const { batchId } = await applyOperations('удали', [{ type: 'delete', taskId: task.id }]);
     expect(await undoBatch(batchId)).toBe(true);
-    const restored = await getTasksBetween(FROM, TO);
+    const restored = await getTasksBetween(OWNER, FROM, TO);
     expect(restored).toHaveLength(1);
     expect(restored[0].id).toBe(task.id);
     expect(restored[0].startMinute).toBe(600);
@@ -125,7 +131,7 @@ run('applyOperations', () => {
   it('откат возвращает исходное состояние, если пачка дважды трогала одну задачу', async () => {
     await clean();
     await applyOperations('создать', [create('Врач', '2030-01-09', 600)]);
-    const [task] = await getTasksBetween(FROM, TO);
+    const [task] = await getTasksBetween(OWNER, FROM, TO);
     const { batchId } = await applyOperations('перенеси и переименуй', [
       {
         type: 'update', taskId: task.id, title: null, date: '2030-01-11',
@@ -137,7 +143,7 @@ run('applyOperations', () => {
       },
     ]);
     expect(await undoBatch(batchId)).toBe(true);
-    const [restored] = await getTasksBetween(FROM, TO);
+    const [restored] = await getTasksBetween(OWNER, FROM, TO);
     expect(restored.title).toBe('Врач');
     expect(restored.date).toBe('2030-01-09');
   });
@@ -163,7 +169,7 @@ run('applyOperations', () => {
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
       },
     ]);
-    const tasks = await getTasksBetween(FROM, TO);
+    const tasks = await getTasksBetween(OWNER, FROM, TO);
     expect(tasks).toHaveLength(1);
     expect(tasks[0].title).toBe('Бассейн');
     expect(tasks[0].startMinute).toBe(600);
@@ -185,7 +191,7 @@ run('applyOperations', () => {
     expect(await undoBatch(batchId)).toBe(true);
     const exceptions = await sql`select * from recurrence_exceptions where recurrence_id = ${rule.id}`;
     expect(exceptions).toHaveLength(0);   // иначе занятие исчезло бы из календаря навсегда
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
   });
 
   it('не кладёт в снимок исключение, которого пачка не создавала', async () => {
@@ -221,7 +227,7 @@ run('applyOperations', () => {
     // в календарь само собой.
     const exceptions = await sql`select * from recurrence_exceptions where recurrence_id = ${rule.id}`;
     expect(exceptions).toHaveLength(1);
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
   });
 
   it('не оставляет следов, если операция посреди пачки упала', async () => {
@@ -233,7 +239,7 @@ run('applyOperations', () => {
           startMinute: null, durationMinutes: null, allDay: null, categoryId: null },
       ]),
     ).rejects.toThrow();
-    expect(await getTasksBetween(FROM, TO)).toHaveLength(0);
+    expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
   });
 
   it('replace: true заменяет все поля разом — категория и время очищаются', async () => {
@@ -242,7 +248,7 @@ run('applyOperations', () => {
       { type: 'create', title: 'Врач', date: '2030-01-09', startMinute: 600, durationMinutes: 60,
         allDay: false, categoryId: 'health', recurrence: null },
     ]);
-    const [task] = await getTasksBetween(FROM, TO);
+    const [task] = await getTasksBetween(OWNER, FROM, TO);
     expect(task.categoryId).toBe('health');
 
     // Так шлёт карточка задачи: все поля разом, null значит «очистить».
@@ -253,7 +259,7 @@ run('applyOperations', () => {
         allDay: true, categoryId: null,
       },
     ]);
-    const [updated] = await getTasksBetween(FROM, TO);
+    const [updated] = await getTasksBetween(OWNER, FROM, TO);
     expect(updated.categoryId).toBeNull();
     expect(updated.allDay).toBe(true);
     expect(updated.startMinute).toBeNull();
@@ -265,13 +271,13 @@ run('applyOperations', () => {
       { type: 'create', title: 'Врач', date: '2030-01-09', startMinute: 600, durationMinutes: 60,
         allDay: false, categoryId: 'health', recurrence: null },
     ]);
-    const [task] = await getTasksBetween(FROM, TO);
+    const [task] = await getTasksBetween(OWNER, FROM, TO);
 
     await applyOperations('переименуй', [
       { type: 'update', taskId: task.id, title: 'Стоматолог', date: null,
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null },
     ]);
-    const [updated] = await getTasksBetween(FROM, TO);
+    const [updated] = await getTasksBetween(OWNER, FROM, TO);
     expect(updated.title).toBe('Стоматолог');
     expect(updated.categoryId).toBe('health');   // null без replace не трогает поле
     expect(updated.startMinute).toBe(600);        // время тоже не тронуто

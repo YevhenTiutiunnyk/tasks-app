@@ -2,11 +2,15 @@ import { NextResponse } from 'next/server';
 import { isValidIsoDate } from '@/lib/dates';
 import { sql, toIsoDate } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import { isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseClarification } from '@/lib/parse-clarify';
 
 export async function POST(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     answers?: { taskId: string; text: string }[];
     today?: string;
@@ -53,5 +57,5 @@ export async function POST(request: Request) {
     `;
   }
 
-  return NextResponse.json({ failed, week: await loadWeek(today) });
+  return NextResponse.json({ failed, week: await loadWeek(user.userId, today) });
 }

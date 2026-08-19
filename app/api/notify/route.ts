@@ -4,6 +4,7 @@ import webpush from 'web-push';
 import {
   getSentKeys,
   getSettings,
+  getSoleUserId,
   getSubscriptions,
   markSent,
   purgeOldSent,
@@ -49,13 +50,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
   }
 
-  const [settings, timezone] = await Promise.all([getSettings(), getTimezone()]);
+  // Сессии у планировщика нет и быть не может, а владелец нужен: до задачи 5
+  // роут работает на единственном. Если их уже не один, лучше не отправить
+  // ничего, чем разослать одному человеку чужие напоминания.
+  const userId = await getSoleUserId();
+  if (!userId) {
+    return NextResponse.json({ sent: 0, due: 0, subscriptions: 0, reason: 'не один владелец' });
+  }
+
+  const [settings, timezone] = await Promise.all([getSettings(userId), getTimezone(userId)]);
   const { today, nowMinute } = nowInZone(timezone);
 
   // Завтра нужно потому, что окно перешагивает полночь: задача в 00:05
   // при напоминании за 15 минут требует отправки в 23:50 предыдущего дня.
   const [tasks, alreadySent, subscriptions] = await Promise.all([
-    loadRange(today, addDays(today, 1)),
+    loadRange(userId, today, addDays(today, 1)),
     getSentKeys(),
     getSubscriptions(),
   ]);

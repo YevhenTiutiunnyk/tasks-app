@@ -1,5 +1,6 @@
 import 'server-only';
 import postgres from 'postgres';
+import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import type { Category, Recurrence, RecurrenceException, Settings, Task } from './types';
 
 // prepare: false — обязательно для транзакционного пулера Supabase (порт 6543).
@@ -41,25 +42,36 @@ export function rowToRecurrence(row: any): Recurrence {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-export async function getTasksBetween(from: string, to: string): Promise<Task[]> {
+export async function getTasksBetween(userId: string, from: string, to: string): Promise<Task[]> {
   const rows = await sql`
-    select * from tasks where date >= ${from} and date <= ${to} order by date, start_minute nulls first
+    select * from tasks
+    where user_id = ${userId} and date >= ${from} and date <= ${to}
+    order by date, start_minute nulls first
   `;
   return rows.map(rowToTask);
 }
 
-export async function getRecurrences(): Promise<Recurrence[]> {
-  const rows = await sql`select * from recurrences`;
+export async function getRecurrences(userId: string): Promise<Recurrence[]> {
+  const rows = await sql`select * from recurrences where user_id = ${userId}`;
   return rows.map(rowToRecurrence);
 }
 
-export async function getExceptions(): Promise<RecurrenceException[]> {
-  const rows = await sql`select * from recurrence_exceptions`;
+export async function getExceptions(userId: string): Promise<RecurrenceException[]> {
+  // У recurrence_exceptions нет своей колонки владельца: ключ (recurrence_id,
+  // date) уже ведёт к правилу, а у правила владелец есть. Дублировать значило
+  // бы завести второй источник правды, способный разъехаться.
+  const rows = await sql`
+    select e.recurrence_id, e.date
+    from recurrence_exceptions e
+    join recurrences r on r.id = e.recurrence_id
+    where r.user_id = ${userId}
+  `;
   return rows.map((row) => ({ recurrenceId: row.recurrence_id, date: toIsoDate(row.date) }));
 }
 
-export async function getSettings(): Promise<Settings> {
-  const [row] = await sql`select * from settings where id = 1`;
+export async function getSettings(userId: string): Promise<Settings> {
+  const [row] = await sql`select * from user_settings where user_id = ${userId}`;
+  if (!row) return DEFAULT_SETTINGS;
   return {
     workStartMinute: row.work_start_minute,
     workEndMinute: row.work_end_minute,
@@ -77,17 +89,27 @@ export async function getSettings(): Promise<Settings> {
  * его в том же объекте значило бы дать экрану настроек тихо затирать пояс
  * тем, что было при загрузке страницы.
  */
-export async function getTimezone(): Promise<string> {
-  const [row] = await sql`select timezone from settings where id = 1`;
-  return row.timezone;
+export async function getTimezone(userId: string): Promise<string> {
+  const [row] = await sql`select timezone from user_settings where user_id = ${userId}`;
+  return row ? row.timezone : DEFAULT_TIMEZONE;
 }
 
-export async function saveTimezone(timezone: string): Promise<void> {
-  // Условие в самом запросе: команда идёт с телефона по несколько раз в день,
+export async function saveTimezone(userId: string, timezone: string): Promise<void> {
+  // Строки может ещё не быть: настройки заводятся первым сохранением, а пояс
+  // приходит с первой же командой — и обычно раньше. Остальные колонки при
+  // такой вставке берут умолчания, чтобы не выдумывать их на месте.
+  //
+  // Условие в do update: команда идёт с телефона по несколько раз в день,
   // а пояс меняется раз в поездку. Без него это лишняя запись на каждую фразу.
   await sql`
-    update settings set timezone = ${timezone}
-    where id = 1 and timezone is distinct from ${timezone}
+    insert into user_settings (user_id, work_start_minute, work_end_minute, about_me,
+                               categories, timezone, notify_before_minutes)
+    values (${userId}, ${DEFAULT_SETTINGS.workStartMinute}, ${DEFAULT_SETTINGS.workEndMinute},
+            ${DEFAULT_SETTINGS.aboutMe},
+            ${sql.json(DEFAULT_SETTINGS.categories as unknown as postgres.JSONValue)},
+            ${timezone}, ${DEFAULT_SETTINGS.notifyBeforeMinutes})
+    on conflict (user_id) do update set timezone = excluded.timezone
+    where user_settings.timezone is distinct from excluded.timezone
   `;
 }
 
@@ -95,16 +117,34 @@ export async function saveTimezone(timezone: string): Promise<void> {
 // signature on its object variant. Category is a plain-JSON-safe interface
 // declared without one, so TS rejects the structural match; cast through
 // unknown rather than loosen the Category type just to satisfy the driver.
-export async function saveSettings(settings: Settings): Promise<void> {
+export async function saveSettings(userId: string, settings: Settings): Promise<void> {
+  // Пояс в do update не перечислен намеренно: экран настроек его не
+  // редактирует, а Settings его не содержит — перечисли, и сохранение
+  // настроек затирало бы пояс, присланный телефоном. DEFAULT_TIMEZONE
+  // в values участвует только при первой вставке.
   await sql`
-    update settings set
-      work_start_minute = ${settings.workStartMinute},
-      work_end_minute   = ${settings.workEndMinute},
-      about_me          = ${settings.aboutMe},
-      categories        = ${sql.json(settings.categories as unknown as postgres.JSONValue)},
-      notify_before_minutes = ${settings.notifyBeforeMinutes}
-    where id = 1
+    insert into user_settings (user_id, work_start_minute, work_end_minute, about_me,
+                               categories, timezone, notify_before_minutes)
+    values (${userId}, ${settings.workStartMinute}, ${settings.workEndMinute},
+            ${settings.aboutMe},
+            ${sql.json(settings.categories as unknown as postgres.JSONValue)},
+            ${DEFAULT_TIMEZONE}, ${settings.notifyBeforeMinutes})
+    on conflict (user_id) do update set
+      work_start_minute     = excluded.work_start_minute,
+      work_end_minute       = excluded.work_end_minute,
+      about_me              = excluded.about_me,
+      categories            = excluded.categories,
+      notify_before_minutes = excluded.notify_before_minutes
   `;
+}
+
+/**
+ * Временная опора: до задачи 5 планировщик работает на одном владельце.
+ * Задача 5 заменяет это на getUsersWithSubscriptions.
+ */
+export async function getSoleUserId(): Promise<string | null> {
+  const rows = await sql`select id from "user" limit 2`;
+  return rows.length === 1 ? (rows[0].id as string) : null;
 }
 
 export interface PushSubscriptionRow {

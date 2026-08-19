@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSettings, saveSettings } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import type { Settings } from '@/lib/types';
 
 // «Про меня» уходит в системный промпт с каждой фразой, а категории
@@ -9,11 +10,17 @@ import type { Settings } from '@/lib/types';
 const MAX_ABOUT_ME = 2000;
 const MAX_CATEGORIES = 30;
 
-export async function GET() {
-  return NextResponse.json(await getSettings());
+export async function GET(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
+  return NextResponse.json(await getSettings(user.userId));
 }
 
 export async function PUT(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<Settings>(request);
   if (!body) return badRequest('Не удалось разобрать тело запроса');
 
@@ -43,7 +50,7 @@ export async function PUT(request: Request) {
     return badRequest('Напоминать можно от 0 до 1439 минут до начала');
   }
 
-  await saveSettings({
+  await saveSettings(user.userId, {
     workStartMinute: body.workStartMinute,
     workEndMinute: body.workEndMinute,
     aboutMe,
