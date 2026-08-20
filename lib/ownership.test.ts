@@ -711,7 +711,7 @@ run('изоляция по владельцу', () => {
     it('чужие ключи не дают присвоить себе чужой endpoint', async () => {
       // Отличие от теста выше: там A и C предъявляют ОДНИ И ТЕ ЖЕ ключи —
       // легитимная смена хозяина браузера. Здесь B шлёт СВОИ ключи для
-      // endpoint устройства A: endpoint не секрet, и одного его недостаточно,
+      // endpoint устройства A: endpoint не секрет, и одного его недостаточно,
       // чтобы присвоить чужую подписку. Владелец обязан остаться прежним,
       // а p256dh/auth — ключами исходного устройства: смени их на ключи B,
       // и планировщик станет шифровать задачи B под ключи A, а телефон A
@@ -719,14 +719,22 @@ run('изоляция по владельцу', () => {
       const endpoint = 'https://zz.invalid/push/stolen';
       await addSubscription(idA, { endpoint, p256dh: 'owner-p', auth: 'owner-a' });
 
-      await addSubscription(idB, { endpoint, p256dh: 'attacker-p', auth: 'attacker-a' });
+      // Уборка — в finally: если мутация вернёт баг и владелец сменится,
+      // строка останется за B, и removeSubscription(idA, ...) её не тронет —
+      // чистим за обоими, иначе утечка теста переживёт сам тест и собьёт
+      // соседние (см. неудачную доставку ниже, где так и случилось при
+      // мутационной проверке).
+      try {
+        await addSubscription(idB, { endpoint, p256dh: 'attacker-p', auth: 'attacker-a' });
 
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
-      expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpoint);
-      const rowA = (await getSubscriptions(idA)).find((s) => s.endpoint === endpoint);
-      expect(rowA).toMatchObject({ p256dh: 'owner-p', auth: 'owner-a' });
-
-      await removeSubscription(idA, endpoint);
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+        expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpoint);
+        const rowA = (await getSubscriptions(idA)).find((s) => s.endpoint === endpoint);
+        expect(rowA).toMatchObject({ p256dh: 'owner-p', auth: 'owner-a' });
+      } finally {
+        await removeSubscription(idA, endpoint);
+        await removeSubscription(idB, endpoint);
+      }
     });
 
     it('снять чужую подписку по известному endpoint не удаётся', async () => {
