@@ -92,7 +92,7 @@ as all-day".
 
 ```bash
 npx vitest run                                                   # no database: DB-backed tests skip
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 164 passing
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 181 passing, 7 skipped
 ```
 
 DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
@@ -100,8 +100,8 @@ DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
 against production. Cleanup in all of them is scoped to their own rows (by owner id
 or by the `zz-`/`.invalid` test addresses), so pointing them at the wrong database
 would be wrong, not destructive — but `vitest.setup.ts` refuses to start at all if
-`DATABASE_URL` is set without a distinct `TEST_DATABASE_URL`, so that mistake isn't
-one you can actually make.
+`DATABASE_URL` is set without a `TEST_DATABASE_URL` pointing at a genuinely
+different database, so that mistake isn't one you can actually make.
 
 ```bash
 scripts/test-db.sh   # (re)creates the container tasks-test-db on port 55432
@@ -124,12 +124,19 @@ TEST_DATABASE_URL=postgresql://postgres:testpass@127.0.0.1:55432/tasks_test
 `DATABASE_URL` at `TEST_DATABASE_URL` — this has to happen before `lib/db.ts` is
 imported, because it opens its connection pool at module load time, not lazily.
 The setup file also refuses to run at all if `DATABASE_URL` is set but
-`TEST_DATABASE_URL` is missing or identical to it, so a lost or mistyped test
-variable fails loudly instead of quietly falling through to production.
+`TEST_DATABASE_URL` is missing or points at the same database, so a lost or
+mistyped test variable fails loudly instead of quietly falling through to
+production. "The same database" is decided by parsing both URLs and comparing
+host and database name, not by comparing the strings: `postgres://` versus
+`postgresql://`, an extra `?sslmode=require` or the other Supabase port are all
+the same database written differently.
 
 The apply/undo tests run against a real Postgres rather than mocks: they assert on
-table contents after the transaction and after the rollback. That is also why the
-per-test timeout in `vitest.config.ts` is raised — those queries cross the network.
+table contents after the transaction and after the rollback. That Postgres is the
+local container, so the whole suite takes about a second. The raised per-test
+timeout in `vitest.config.ts` is a leftover from when these tests went to the
+production database over the network; it stays as cheap headroom for a cold
+container, being a ceiling rather than a delay.
 
 Seven live parsing examples are kept separate. They call the real API, cost money,
 and are skipped by default:
@@ -146,10 +153,18 @@ exactly that case.
 
 ## Running locally
 
+The migrations are applied in two goes, with the first login in between. That is
+not a quirk of the instructions but a property of `0004_ownership.sql`: phase 1
+of it starts with a guard that refuses to run unless the `"user"` table holds
+exactly one row, and it fills the new owner columns from `(select id from
+"user")`. On a brand-new database that table is empty until somebody logs in, so
+the migration has to come after the first login, not before it.
+
 1. `npm install`
 2. Copy `.env.local.example` to `.env.local` and fill it in.
-3. Apply all migrations from `supabase/migrations/` in the Supabase SQL editor,
-   in order: `0001_init.sql`, `0002_push.sql`, `0003_auth.sql`.
+3. Apply the first three migrations from `supabase/migrations/` in the Supabase
+   SQL editor, in order: `0001_init.sql`, `0002_push.sql`, `0003_auth.sql`.
+   Stop there — `0004_ownership.sql` is step 6.
 4. Add your own Google address to the whitelist, in lower case — without this
    row nobody can log in, and the login page says nothing about why:
 
@@ -157,7 +172,21 @@ exactly that case.
    insert into allowed_emails (email) values ('you@example.com');
    ```
 
-5. `npm run dev`
+5. `npm run dev`, open the app and sign in with Google. This creates your row in
+   `"user"`. The schedule itself does not work yet — the owner columns and the
+   `user_settings` table do not exist — and that is expected at this point.
+6. Apply **phase 1** of `0004_ownership.sql`: everything from the top of the file
+   down to its `commit;`. It adds the `user_id` columns, assigns every existing
+   row to the one user found in `"user"`, and creates `user_settings`.
+
+   Phases 2 and 3 further down that file are commented out on purpose and stay
+   that way here: phase 2 carries the old single-row `settings` table into
+   `user_settings`, and phase 3 backfills rows written by the pre-ownership code
+   while it was still deployed. A fresh database has neither of those, which is
+   why `scripts/test-db.sh` also replays phase 1 only.
+
+7. Reload the app — the schedule works, and everything you create from now on
+   belongs to your user.
 
 | Variable | What it is |
 | --- | --- |
