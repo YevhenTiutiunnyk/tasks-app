@@ -138,7 +138,14 @@ export async function POST(request: Request) {
     }
   }
 
-  await purgeOldSent();
+  try {
+    // Уборка — не причина откатывать уже разосланное и отмеченное: падение
+    // purgeOldSent не должно превращать удачный прогон в 500 после того, как
+    // все владельцы обработаны.
+    await purgeOldSent();
+  } catch {
+    console.error('notify: не удалось убрать старые отметки об отправке');
+  }
 
   return NextResponse.json({ sent: sentTotal, due: dueTotal, subscriptions: subscriptionsTotal });
 }

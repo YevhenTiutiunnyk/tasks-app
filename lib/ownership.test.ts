@@ -708,6 +708,27 @@ run('изоляция по владельцу', () => {
       await removeSubscription(idC, endpoint);
     });
 
+    it('чужие ключи не дают присвоить себе чужой endpoint', async () => {
+      // Отличие от теста выше: там A и C предъявляют ОДНИ И ТЕ ЖЕ ключи —
+      // легитимная смена хозяина браузера. Здесь B шлёт СВОИ ключи для
+      // endpoint устройства A: endpoint не секрet, и одного его недостаточно,
+      // чтобы присвоить чужую подписку. Владелец обязан остаться прежним,
+      // а p256dh/auth — ключами исходного устройства: смени их на ключи B,
+      // и планировщик станет шифровать задачи B под ключи A, а телефон A
+      // расшифрует и покажет их как свои — ровно та утечка, что нашло ревью.
+      const endpoint = 'https://zz.invalid/push/stolen';
+      await addSubscription(idA, { endpoint, p256dh: 'owner-p', auth: 'owner-a' });
+
+      await addSubscription(idB, { endpoint, p256dh: 'attacker-p', auth: 'attacker-a' });
+
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+      expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpoint);
+      const rowA = (await getSubscriptions(idA)).find((s) => s.endpoint === endpoint);
+      expect(rowA).toMatchObject({ p256dh: 'owner-p', auth: 'owner-a' });
+
+      await removeSubscription(idA, endpoint);
+    });
+
     it('снять чужую подписку по известному endpoint не удаётся', async () => {
       // Пункт 4 брифа: единственное место в задаче, где потеря владельца в
       // условии даёт видимый вред прямо сегодня — endpoint не секрет.
@@ -829,24 +850,30 @@ run('изоляция по владельцу', () => {
       await addSubscription(idA, { endpoint: endpointA, p256dh: 'pna', auth: 'ana' });
       await addSubscription(idB, { endpoint: endpointB, p256dh: 'pnb', auth: 'anb' });
 
-      pushed.calls = [];
-      const response = await notifyPost(new Request('http://t/api/notify', {
-        method: 'POST',
-        headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
-      }));
-      expect(response.status).toBe(200);
+      // Уборка — в finally, а не последними строками тела: падение на
+      // промежуточном expect иначе оставляет задачи, подписки и отметки
+      // об отправке следующим тестам (см. п. 6 разбора мутаций — так уже
+      // случалось и разгребалось руками).
+      try {
+        pushed.calls = [];
+        const response = await notifyPost(new Request('http://t/api/notify', {
+          method: 'POST',
+          headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+        }));
+        expect(response.status).toBe(200);
 
-      const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
-      const forB = pushed.calls.filter((c) => c.endpoint === endpointB);
-      expect(forA).toHaveLength(1);
-      expect(forB).toHaveLength(1);
-      expect(JSON.parse(forA[0].payload).title).toBe('ZZ-уведомление A');
-      expect(JSON.parse(forB[0].payload).title).toBe('ZZ-уведомление B');
-
-      await removeSubscription(idA, endpointA);
-      await removeSubscription(idB, endpointB);
-      await sql`delete from tasks where id in (${taskA}, ${taskB})`;
-      await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+        const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
+        const forB = pushed.calls.filter((c) => c.endpoint === endpointB);
+        expect(forA).toHaveLength(1);
+        expect(forB).toHaveLength(1);
+        expect(JSON.parse(forA[0].payload).title).toBe('ZZ-уведомление A');
+        expect(JSON.parse(forB[0].payload).title).toBe('ZZ-уведомление B');
+      } finally {
+        await removeSubscription(idA, endpointA);
+        await removeSubscription(idB, endpointB);
+        await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+        await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+      }
     });
 
     it('неудачная доставка не помечает задачу отправленной и не трогает чужую подписку', async () => {
@@ -866,32 +893,38 @@ run('изоляция по владельцу', () => {
       await addSubscription(idA, { endpoint: endpointA, p256dh: 'pfa', auth: 'afa' });
       await addSubscription(idB, { endpoint: endpointB, p256dh: 'pfb', auth: 'afb' });
 
-      // B «недоступен» — 410 Gone, как отозванная браузером подписка.
-      pushed.calls = [];
-      pushed.failWith.set(endpointB, 410);
+      // Уборка — в finally: падение на промежуточном expect не должно
+      // оставлять задачи, подписку и отметку об отправке следующим тестам.
+      try {
+        // B «недоступен» — 410 Gone, как отозванная браузером подписка.
+        pushed.calls = [];
+        pushed.failWith.set(endpointB, 410);
 
-      const response = await notifyPost(new Request('http://t/api/notify', {
-        method: 'POST',
-        headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
-      }));
-      expect(response.status).toBe(200);
+        const response = await notifyPost(new Request('http://t/api/notify', {
+          method: 'POST',
+          headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+        }));
+        expect(response.status).toBe(200);
 
-      // Пункт 5 брифа, записанное решение проекта: неудачная доставка не
-      // ставит отметку — напоминание не потеряно и придёт на следующем
-      // запуске. Не «чинить».
-      const [sentA] = await sql`select 1 from notifications_sent where key = ${taskA}`;
-      const [sentB] = await sql`select 1 from notifications_sent where key = ${taskB}`;
-      expect(sentA).toBeDefined();
-      expect(sentB).toBeUndefined();
+        // Пункт 5 брифа, записанное решение проекта: неудачная доставка не
+        // ставит отметку — напоминание не потеряно и придёт на следующем
+        // запуске. Не «чинить».
+        const [sentA] = await sql`select 1 from notifications_sent where key = ${taskA}`;
+        const [sentB] = await sql`select 1 from notifications_sent where key = ${taskB}`;
+        expect(sentA).toBeDefined();
+        expect(sentB).toBeUndefined();
 
-      // 410 снимает ровно ту подписку, что отказала, — не соседнюю.
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpointA);
-      expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpointB);
-
-      pushed.failWith.delete(endpointB);
-      await removeSubscription(idA, endpointA);
-      await sql`delete from tasks where id in (${taskA}, ${taskB})`;
-      await sql`delete from notifications_sent where key = ${taskA}`;
+        // 410 снимает ровно ту подписку, что отказала, — не соседнюю.
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpointA);
+        expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpointB);
+      } finally {
+        pushed.failWith.delete(endpointB);
+        await removeSubscription(idA, endpointA);
+        // B, если пережила мутацию removeSubscription, тоже не должна утечь.
+        await removeSubscription(idB, endpointB);
+        await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+        await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+      }
     });
 
     it('часовой пояс читается для текущего владельца, а не для соседнего', async () => {
@@ -917,26 +950,29 @@ run('изоляция по владельцу', () => {
       await addSubscription(idA, { endpoint: endpointA, p256dh: 'pza', auth: 'aza' });
       await addSubscription(idB, { endpoint: endpointB, p256dh: 'pzb', auth: 'azb' });
 
-      pushed.calls = [];
-      const response = await notifyPost(new Request('http://t/api/notify', {
-        method: 'POST',
-        headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
-      }));
-      expect(response.status).toBe(200);
+      // Уборка — в finally по той же причине, что и в двух тестах выше.
+      try {
+        pushed.calls = [];
+        const response = await notifyPost(new Request('http://t/api/notify', {
+          method: 'POST',
+          headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+        }));
+        expect(response.status).toBe(200);
 
-      const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
-      const forB = pushed.calls.filter((c) => c.endpoint === endpointB);
-      expect(forA).toHaveLength(1);
-      expect(forB).toHaveLength(1);
-      expect(JSON.parse(forA[0].payload).title).toBe('ZZ-пояс A');
-      expect(JSON.parse(forB[0].payload).title).toBe('ZZ-пояс B');
-
-      zoneOverrides.map.delete(ZONE_A);
-      zoneOverrides.map.delete(ZONE_B);
-      await removeSubscription(idA, endpointA);
-      await removeSubscription(idB, endpointB);
-      await sql`delete from tasks where id in (${taskA}, ${taskB})`;
-      await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+        const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
+        const forB = pushed.calls.filter((c) => c.endpoint === endpointB);
+        expect(forA).toHaveLength(1);
+        expect(forB).toHaveLength(1);
+        expect(JSON.parse(forA[0].payload).title).toBe('ZZ-пояс A');
+        expect(JSON.parse(forB[0].payload).title).toBe('ZZ-пояс B');
+      } finally {
+        zoneOverrides.map.delete(ZONE_A);
+        zoneOverrides.map.delete(ZONE_B);
+        await removeSubscription(idA, endpointA);
+        await removeSubscription(idB, endpointB);
+        await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+        await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+      }
     });
   });
 
