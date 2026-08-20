@@ -682,15 +682,19 @@ run('изоляция по владельцу', () => {
 
   describe('изоляция подписок на уведомления', () => {
     it('подписка одного не видна другому', async () => {
-      await addSubscription(idA, { endpoint: 'https://zz.invalid/push/a', p256dh: 'pA', auth: 'aA' });
-      await addSubscription(idB, { endpoint: 'https://zz.invalid/push/b', p256dh: 'pB', auth: 'aB' });
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint))
-        .toEqual(['https://zz.invalid/push/a']);
-      expect((await getSubscriptions(idB)).map((s) => s.endpoint))
-        .toEqual(['https://zz.invalid/push/b']);
-
-      await removeSubscription(idA, 'https://zz.invalid/push/a');
-      await removeSubscription(idB, 'https://zz.invalid/push/b');
+      const endpointA = 'https://zz.invalid/push/a';
+      const endpointB = 'https://zz.invalid/push/b';
+      // Уборка — в finally по всему блоку (пункт 2 разбора ревью): падение
+      // на промежуточном expect не должно оставлять строку следующим тестам.
+      try {
+        await addSubscription(idA, { endpoint: endpointA, p256dh: 'pA', auth: 'aA' });
+        await addSubscription(idB, { endpoint: endpointB, p256dh: 'pB', auth: 'aB' });
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toEqual([endpointA]);
+        expect((await getSubscriptions(idB)).map((s) => s.endpoint)).toEqual([endpointB]);
+      } finally {
+        await removeSubscription(idA, endpointA);
+        await removeSubscription(idB, endpointB);
+      }
     });
 
     it('подписка с уже известного устройства переходит новому владельцу', async () => {
@@ -698,14 +702,18 @@ run('изоляция по владельцу', () => {
       // принадлежать другому человеку. Владелец обязан смениться, а не
       // остаться прежним и не задвоиться.
       const endpoint = 'https://zz.invalid/push/shared';
-      await addSubscription(idA, { endpoint, p256dh: 'p1', auth: 'a1' });
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+      try {
+        await addSubscription(idA, { endpoint, p256dh: 'p1', auth: 'a1' });
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
 
-      await addSubscription(idC, { endpoint, p256dh: 'p1', auth: 'a1' });
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
-      expect((await getSubscriptions(idC)).map((s) => s.endpoint)).toContain(endpoint);
-
-      await removeSubscription(idC, endpoint);
+        await addSubscription(idC, { endpoint, p256dh: 'p1', auth: 'a1' });
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+        expect((await getSubscriptions(idC)).map((s) => s.endpoint)).toContain(endpoint);
+      } finally {
+        // За обоими: неизвестно, успел ли перейти владелец к моменту сбоя.
+        await removeSubscription(idA, endpoint);
+        await removeSubscription(idC, endpoint);
+      }
     });
 
     it('чужие ключи не дают присвоить себе чужой endpoint', async () => {
@@ -737,17 +745,61 @@ run('изоляция по владельцу', () => {
       }
     });
 
+    it('совпавший p256dh не спасает при чужом auth', async () => {
+      // Пин одной половины условия where по отдельности: и p256dh, и auth
+      // должны совпасть оба, иначе будущий рефакторинг может тихо оставить
+      // только одну проверку — а её одной достаточно, чтобы дыра вернулась.
+      // B здесь узнал настоящий p256dh устройства A (в теле POST /api/push
+      // он идёт открытым текстом — см. комментарий к addSubscription), но
+      // auth у него свой.
+      const endpoint = 'https://zz.invalid/push/half-p256dh';
+      await addSubscription(idA, { endpoint, p256dh: 'shared-p', auth: 'owner-a' });
+
+      try {
+        await addSubscription(idB, { endpoint, p256dh: 'shared-p', auth: 'attacker-a' });
+
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+        expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpoint);
+      } finally {
+        await removeSubscription(idA, endpoint);
+        await removeSubscription(idB, endpoint);
+      }
+    });
+
+    it('совпавший auth не спасает при чужом p256dh', async () => {
+      // Симметричный пин второй половины условия.
+      const endpoint = 'https://zz.invalid/push/half-auth';
+      await addSubscription(idA, { endpoint, p256dh: 'owner-p', auth: 'shared-a' });
+
+      try {
+        await addSubscription(idB, { endpoint, p256dh: 'attacker-p', auth: 'shared-a' });
+
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+        expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpoint);
+      } finally {
+        await removeSubscription(idA, endpoint);
+        await removeSubscription(idB, endpoint);
+      }
+    });
+
     it('снять чужую подписку по известному endpoint не удаётся', async () => {
       // Пункт 4 брифа: единственное место в задаче, где потеря владельца в
       // условии даёт видимый вред прямо сегодня — endpoint не секрет.
+      // Собственное удаление здесь — часть проверяемого поведения, а не
+      // только уборка, поэтому оно и его expect остаются в try; finally —
+      // страховка на случай падения до него (повторный вызов идемпотентен).
       const endpoint = 'https://zz.invalid/push/guard';
-      await addSubscription(idA, { endpoint, p256dh: 'p2', auth: 'a2' });
+      try {
+        await addSubscription(idA, { endpoint, p256dh: 'p2', auth: 'a2' });
 
-      await removeSubscription(idB, endpoint);
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+        await removeSubscription(idB, endpoint);
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
 
-      await removeSubscription(idA, endpoint);
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+        await removeSubscription(idA, endpoint);
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+      } finally {
+        await removeSubscription(idA, endpoint);
+      }
     });
 
     it('список для рассылки берётся из подписок, а не из "user"', async () => {
@@ -755,13 +807,15 @@ run('изоляция по владельцу', () => {
       // входа) и ни разу не подписывался — рассылать ему нечего, и его не
       // должно быть в списке, даже несмотря на строку в "user".
       const endpoint = 'https://zz.invalid/push/list';
-      await addSubscription(idA, { endpoint, p256dh: 'p3', auth: 'a3' });
+      try {
+        await addSubscription(idA, { endpoint, p256dh: 'p3', auth: 'a3' });
 
-      const owners = await getUsersWithSubscriptions();
-      expect(owners).toContain(idA);
-      expect(owners).not.toContain(idC);
-
-      await removeSubscription(idA, endpoint);
+        const owners = await getUsersWithSubscriptions();
+        expect(owners).toContain(idA);
+        expect(owners).not.toContain(idC);
+      } finally {
+        await removeSubscription(idA, endpoint);
+      }
     });
   });
 
@@ -779,35 +833,44 @@ run('изоляция по владельцу', () => {
       // toEqual с ровно одним элементом красит тест и при неподключённом
       // requireUser (тогда владелец не пишется вовсе), и при потерянном
       // фильтре в getSubscriptions (тогда вернулись бы обе строки).
-      session.userId = idB;
-      await pushPost(pushRequest('POST', {
-        endpoint: 'https://zz.invalid/push/route-b', keys: { p256dh: 'rpb', auth: 'rab' },
-      }));
+      const endpointA = 'https://zz.invalid/push/route-a';
+      const endpointB = 'https://zz.invalid/push/route-b';
+      try {
+        session.userId = idB;
+        await pushPost(pushRequest('POST', {
+          endpoint: endpointB, keys: { p256dh: 'rpb', auth: 'rab' },
+        }));
 
-      session.userId = idA;
-      const response = await pushPost(pushRequest('POST', {
-        endpoint: 'https://zz.invalid/push/route-a', keys: { p256dh: 'rp', auth: 'ra' },
-      }));
-      expect(response.status).toBe(200);
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint))
-        .toEqual(['https://zz.invalid/push/route-a']);
-
-      await removeSubscription(idA, 'https://zz.invalid/push/route-a');
-      await removeSubscription(idB, 'https://zz.invalid/push/route-b');
+        session.userId = idA;
+        const response = await pushPost(pushRequest('POST', {
+          endpoint: endpointA, keys: { p256dh: 'rp', auth: 'ra' },
+        }));
+        expect(response.status).toBe(200);
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toEqual([endpointA]);
+      } finally {
+        await removeSubscription(idA, endpointA);
+        await removeSubscription(idB, endpointB);
+      }
     });
 
     it('DELETE не снимает чужую подписку', async () => {
+      // Собственное удаление и его expect — часть проверяемого поведения,
+      // остаются в try; finally — страховка на случай падения до него.
       const endpoint = 'https://zz.invalid/push/route-guard';
-      session.userId = idA;
-      await pushPost(pushRequest('POST', { endpoint, keys: { p256dh: 'rp2', auth: 'ra2' } }));
+      try {
+        session.userId = idA;
+        await pushPost(pushRequest('POST', { endpoint, keys: { p256dh: 'rp2', auth: 'ra2' } }));
 
-      session.userId = idB;
-      await pushDelete(pushRequest('DELETE', { endpoint }));
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+        session.userId = idB;
+        await pushDelete(pushRequest('DELETE', { endpoint }));
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
 
-      session.userId = idA;
-      await pushDelete(pushRequest('DELETE', { endpoint }));
-      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+        session.userId = idA;
+        await pushDelete(pushRequest('DELETE', { endpoint }));
+        expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+      } finally {
+        await removeSubscription(idA, endpoint);
+      }
     });
   });
 
