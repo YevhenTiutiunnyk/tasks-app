@@ -95,11 +95,13 @@ npx vitest run                                                   # no database: 
 node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 164 passing
 ```
 
-DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`) run
-against a disposable Postgres in Docker — never against production. Some of them
-delete rows without a `where` clause (that's the point: they need a real transaction
-to roll back), so pointing them at the wrong database would be destructive, not just
-wrong.
+DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
+`lib/allowed-emails.test.ts`) run against a disposable Postgres in Docker — never
+against production. Cleanup in all of them is scoped to their own rows (by owner id
+or by the `zz-`/`.invalid` test addresses), so pointing them at the wrong database
+would be wrong, not destructive — but `vitest.setup.ts` refuses to start at all if
+`DATABASE_URL` is set without a distinct `TEST_DATABASE_URL`, so that mistake isn't
+one you can actually make.
 
 ```bash
 scripts/test-db.sh   # (re)creates the container tasks-test-db on port 55432

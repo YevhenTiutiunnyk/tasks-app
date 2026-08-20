@@ -9,9 +9,10 @@ const FROM = '2030-01-07';   // понедельник, заведомо пус�
 const TO = '2030-01-13';
 
 // Владельца передаём и в запись: applyOperations и undoBatch принимают его
-// первым аргументом. Адресная чистка журнала — задача 6, пока clean() ниже
-// сносит command_log целиком, поэтому файл не запускают на боевой базе
-// вместе с остальными.
+// первым аргументом. Чистка command_log в clean() ниже — тоже адресная,
+// по своему владельцу, а не по всей таблице: файл делит тестовую базу
+// с lib/ownership.test.ts, и сплошной delete гонялся бы наперегонки
+// с его собственными проверками журнала.
 //
 // Пользователь заводится по-настоящему, а не только называется: tasks.user_id —
 // внешний ключ на "user"(id), и как только задача 3 начнёт его писать, вставка
@@ -29,7 +30,10 @@ function create(title: string, date: string, startMinute: number | null): Operat
 async function clean() {
   await sql`delete from tasks where date >= ${FROM} and date <= ${TO}`;
   await sql`delete from recurrences where starts_on >= ${FROM} and starts_on <= ${TO}`;
-  await sql`delete from command_log`;
+  // Адресно, по своему владельцу — сплошной delete смёл бы и журнал
+  // lib/ownership.test.ts, если файлы когда-нибудь снова окажутся
+  // на одной базе одновременно.
+  await sql`delete from command_log where user_id = ${OWNER}`;
 }
 
 run('applyOperations', () => {
