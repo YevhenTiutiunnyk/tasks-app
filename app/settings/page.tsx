@@ -78,10 +78,71 @@ export default function SettingsPage() {
     }
   }
 
+  /**
+   * Снять подписку на пуши — и с сервера, и из браузера.
+   *
+   * Подписка живёт на origin, а не на сессии: выход её не трогает, и на общем
+   * устройстве это протекает между людьми. A вошёл, включил уведомления,
+   * вышел; вошёл B — PushToggle читает состояние из pushManager
+   * .getSubscription(), то есть из браузера, и честно показывает B
+   * «Включены на этом устройстве», а строка в push_subscriptions всё ещё
+   * принадлежит A. Планировщик на итерации A шлёт на это устройство
+   * названия задач A, и телефон B их расшифровывает и показывает. Само это
+   * не вылечится: B видит «включено» и нажимать «Выключить» не станет.
+   *
+   * Сервер первым, пока endpoint ещё действителен, но unsubscribe — в finally
+   * и потому в любом случае: даже если DELETE не долетел, снятая в браузере
+   * подписка перестанет принимать доставку, и первая же попытка планировщика
+   * вернёт 404/410, по которому роут сам уберёт мёртвую строку. Обратный
+   * порядок такой страховки не даёт.
+   */
+  async function releasePush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) return;
+
+    let serverFailure = '';
+    try {
+      const response = await fetch('/api/push', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint: subscription.endpoint }),
+      });
+      if (!response.ok) serverFailure = `сервер ответил ${response.status}`;
+    } catch {
+      serverFailure = 'нет связи с сервером';
+    } finally {
+      await subscription.unsubscribe();
+    }
+    if (serverFailure) throw new Error(`не удалось снять подписку: ${serverFailure}`);
+  }
+
   async function signOut() {
     if (signOutBusy) return;
     setSignOutBusy(true);
     setSignOutError('');
+
+    try {
+      await releasePush();
+    } catch (cause) {
+      // Выход не блокируем: человек нажал «выйти» — он должен выйти, и
+      // оставить его в аккаунте из-за неснятой подписки было бы хуже, чем
+      // сама неснятая подписка. Но и не глушим: пустой catch здесь означал
+      // бы, что утечка уведомлений случилась и никто о ней не узнал.
+      //
+      // Почему в консоль, а не на экран: сразу после этого страница целиком
+      // перезагружается на /login, и любое сообщение в signOutError мигнуло
+      // бы и исчезло, ничего не сообщив. Держать человека до нажатия «ок»
+      // (alert) — это и есть блокировка выхода, да ещё и без единого
+      // действия, которое он мог бы предпринять. В консоли след остаётся.
+      //
+      // В лог — только текст ошибки, без самого объекта: у ошибок этого
+      // пути в полях лежит endpoint подписки, а он адрес устройства
+      // (пункт 6 брифа — адресам в логах хода нет).
+      console.error('выход:', cause instanceof Error ? cause.message : 'сбой снятия подписки');
+    }
+
     const { error: failure } = await authClient.signOut();
     // Бэкенд сообщает — экран молчит: та же серия дефектов, что и на
     // странице входа. Полной перезагрузкой уходим только при успехе —
