@@ -138,15 +138,6 @@ export async function saveSettings(userId: string, settings: Settings): Promise<
   `;
 }
 
-/**
- * Временная опора: до задачи 5 планировщик работает на одном владельце.
- * Задача 5 заменяет это на getUsersWithSubscriptions.
- */
-export async function getSoleUserId(): Promise<string | null> {
-  const rows = await sql`select id from "user" limit 2`;
-  return rows.length === 1 ? (rows[0].id as string) : null;
-}
-
 export interface PushSubscriptionRow {
   endpoint: string;
   p256dh: string;
@@ -167,6 +158,13 @@ export async function addSubscription(
   // Повторное нажатие кнопки в настройках не должно быть ошибкой: браузер
   // отдаёт ту же подписку, пока разрешение не отозвано. Владельца обновляем
   // на случай, если устройством раньше пользовался другой человек.
+  //
+  // p256dh и auth в do update не перечислены нарочно: строка хранит ключи
+  // шифрования, под которые подписан именно этот браузер, и перезаписывать
+  // их чужими значениями нельзя. Поэтому даже тот, кто узнал чужой endpoint
+  // (а он не секрет — см. lib/ownership.test.ts), не перехватит чужие
+  // уведомления: отправка по-прежнему уйдёт зашифрованной под исходные ключи
+  // и расшифруется только на исходном устройстве.
   await sql`
     insert into push_subscriptions (endpoint, p256dh, auth, user_id)
     values (${subscription.endpoint}, ${subscription.p256dh}, ${subscription.auth}, ${userId})

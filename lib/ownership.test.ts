@@ -16,6 +16,8 @@ import {
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import { loadRange, loadWeek } from './week';
 import { applyOperations, undoBatch } from './apply';
+import { addDays } from './dates';
+import { nowInZone } from './notify';
 
 // Владельца запроса в роутах даёт сессия better-auth. Поднимать её ради
 // проверки фильтров в SQL незачем — подменяем помощника целиком и называем
@@ -36,14 +38,45 @@ vi.mock('./parse-clarify', () => ({
   },
 }));
 
+// web-push реально стучится к push-серверам браузеров. В проверке
+// планировщика важно не что ответит провайдер, а КОМУ ушла отправка —
+// подменяем модуль целиком и записываем endpoint и тело каждого вызова.
+// failWith позволяет отдельным тестам заставить конкретный endpoint
+// «отказать» с нужным статусом — так проверяется путь очистки мёртвой
+// подписки, не поднимая настоящий сервис push-уведомлений.
+const pushed = vi.hoisted(() => ({
+  calls: [] as { endpoint: string; payload: string }[],
+  failWith: new Map<string, number>(),
+}));
+vi.mock('web-push', () => ({
+  default: {
+    setVapidDetails: () => {},
+    sendNotification: async (
+      subscription: { endpoint: string },
+      payload: string,
+    ) => {
+      pushed.calls.push({ endpoint: subscription.endpoint, payload });
+      const statusCode = pushed.failWith.get(subscription.endpoint);
+      if (statusCode !== undefined) {
+        const error = new Error('ZZ-имитация сбоя доставки') as Error & { statusCode?: number };
+        error.statusCode = statusCode;
+        throw error;
+      }
+    },
+  },
+}));
+
 // Роуты импортируются после vi.mock намеренно: подмена должна быть объявлена
 // раньше, чем модуль роута потянет за собой настоящий require-user.
 import { PATCH as taskPatch, DELETE as taskDelete } from '@/app/api/task/route';
 import { POST as clarifyPost } from '@/app/api/clarify/route';
 import { POST as undoPost } from '@/app/api/undo/route';
 import { POST as pushPost, DELETE as pushDelete } from '@/app/api/push/route';
+import { POST as notifyPost } from '@/app/api/notify/route';
 
-// Тестовые пользователи заводятся в БОЕВОЙ таблице "user" — другой базы нет.
+// Тестовые пользователи заводятся в отдельной тестовой базе (TEST_DATABASE_URL,
+// см. vitest.setup.ts) — таблица "user" здесь не боевая, а поднятая
+// scripts/test-db.sh заново на каждый прогон миграций.
 // Домен .invalid зарезервирован стандартом и не может принадлежать человеку.
 const A = 'zz-owner-a@example.invalid';
 const B = 'zz-owner-b@example.invalid';
@@ -169,9 +202,8 @@ run('изоляция по владельцу', () => {
     ).toBe(0);
 
     // Чистка ДО, а не только после: жёсткий обрыв прогона оставит лишних
-    // в "user", и это не косметика — getSoleUserId вернёт null и планировщик
-    // молча замолчит, а предохранитель «ровно одна строка» в фазах 2 и 3
-    // миграции откажется работать.
+    // в "user", и это не косметика — предохранитель «ровно одна строка»
+    // в фазах 2 и 3 миграции откажется работать.
     await clean();
 
     // C заводится только в "user": ни задач, ни правил, ни настроек —
@@ -726,6 +758,119 @@ run('изоляция по владельцу', () => {
       session.userId = idA;
       await pushDelete(pushRequest('DELETE', { endpoint }));
       expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+    });
+  });
+
+  describe('изоляция в планировщике уведомлений', () => {
+    async function insertDueTask(userId: string, title: string, date: string, startMinute: number) {
+      const [row] = await sql`
+        insert into tasks (title, date, start_minute, duration_minutes, all_day, user_id)
+        values (${title}, ${date}, ${startMinute}, 30, false, ${userId})
+        returning id
+      `;
+      return row.id as string;
+    }
+
+    /** Дата и минута через offset минут от «сейчас» в UTC, с переходом на завтра. */
+    function inMinutes(today: string, nowMinute: number, offset: number) {
+      let date = today;
+      let startMinute = nowMinute + offset;
+      if (startMinute >= 1440) {
+        startMinute -= 1440;
+        date = addDays(today, 1);
+      }
+      return { date, startMinute };
+    }
+
+    it('главный тест: у каждого владельца свои задачи и свои подписки — только своё и уходит', async () => {
+      // Ровно то, ради чего писалась задача 5: два владельца со своими
+      // задачами и своими подписками. Если цикл в роуте начнёт слать всем
+      // подряд, здесь появится либо лишний вызов на чужом endpoint, либо
+      // чужой заголовок в своём.
+      await saveTimezone(idA, 'UTC');
+      await saveTimezone(idB, 'UTC');
+      // Пороги нарочно разные и в разные стороны: у A узкий (5 минут),
+      // у B широкий (90). Перепутанные при чтении настройки владельца не
+      // просто сдвинут окно, а уберут задачу из него — симметричный порог
+      // такую подмену не заметил бы.
+      await saveSettings(idA, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 5 });
+      await saveSettings(idB, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 90 });
+
+      const { today, nowMinute } = nowInZone('UTC');
+      const posA = inMinutes(today, nowMinute, 3);
+      const posB = inMinutes(today, nowMinute, 80);
+
+      const taskA = await insertDueTask(idA, 'ZZ-уведомление A', posA.date, posA.startMinute);
+      const taskB = await insertDueTask(idB, 'ZZ-уведомление B', posB.date, posB.startMinute);
+
+      const endpointA = 'https://zz.invalid/push/notify-a';
+      const endpointB = 'https://zz.invalid/push/notify-b';
+      await addSubscription(idA, { endpoint: endpointA, p256dh: 'pna', auth: 'ana' });
+      await addSubscription(idB, { endpoint: endpointB, p256dh: 'pnb', auth: 'anb' });
+
+      pushed.calls = [];
+      const response = await notifyPost(new Request('http://t/api/notify', {
+        method: 'POST',
+        headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+      }));
+      expect(response.status).toBe(200);
+
+      const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
+      const forB = pushed.calls.filter((c) => c.endpoint === endpointB);
+      expect(forA).toHaveLength(1);
+      expect(forB).toHaveLength(1);
+      expect(JSON.parse(forA[0].payload).title).toBe('ZZ-уведомление A');
+      expect(JSON.parse(forB[0].payload).title).toBe('ZZ-уведомление B');
+
+      await removeSubscription(idA, endpointA);
+      await removeSubscription(idB, endpointB);
+      await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+      await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+    });
+
+    it('неудачная доставка не помечает задачу отправленной и не трогает чужую подписку', async () => {
+      await saveTimezone(idA, 'UTC');
+      await saveTimezone(idB, 'UTC');
+      await saveSettings(idA, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+      await saveSettings(idB, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+
+      const { today, nowMinute } = nowInZone('UTC');
+      const pos = inMinutes(today, nowMinute, 10);
+
+      const taskA = await insertDueTask(idA, 'ZZ-успех A', pos.date, pos.startMinute);
+      const taskB = await insertDueTask(idB, 'ZZ-провал B', pos.date, pos.startMinute);
+
+      const endpointA = 'https://zz.invalid/push/fail-a';
+      const endpointB = 'https://zz.invalid/push/fail-b';
+      await addSubscription(idA, { endpoint: endpointA, p256dh: 'pfa', auth: 'afa' });
+      await addSubscription(idB, { endpoint: endpointB, p256dh: 'pfb', auth: 'afb' });
+
+      // B «недоступен» — 410 Gone, как отозванная браузером подписка.
+      pushed.calls = [];
+      pushed.failWith.set(endpointB, 410);
+
+      const response = await notifyPost(new Request('http://t/api/notify', {
+        method: 'POST',
+        headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+      }));
+      expect(response.status).toBe(200);
+
+      // Пункт 5 брифа, записанное решение проекта: неудачная доставка не
+      // ставит отметку — напоминание не потеряно и придёт на следующем
+      // запуске. Не «чинить».
+      const [sentA] = await sql`select 1 from notifications_sent where key = ${taskA}`;
+      const [sentB] = await sql`select 1 from notifications_sent where key = ${taskB}`;
+      expect(sentA).toBeDefined();
+      expect(sentB).toBeUndefined();
+
+      // 410 снимает ровно ту подписку, что отказала, — не соседнюю.
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpointA);
+      expect((await getSubscriptions(idB)).map((s) => s.endpoint)).not.toContain(endpointB);
+
+      pushed.failWith.delete(endpointB);
+      await removeSubscription(idA, endpointA);
+      await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+      await sql`delete from notifications_sent where key = ${taskA}`;
     });
   });
 
