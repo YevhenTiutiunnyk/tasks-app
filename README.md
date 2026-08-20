@@ -92,8 +92,38 @@ as all-day".
 
 ```bash
 npx vitest run                                                   # no database: DB-backed tests skip
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 101 passing
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 164 passing
 ```
+
+DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`) run
+against a disposable Postgres in Docker — never against production. Some of them
+delete rows without a `where` clause (that's the point: they need a real transaction
+to roll back), so pointing them at the wrong database would be destructive, not just
+wrong.
+
+```bash
+scripts/test-db.sh   # (re)creates the container tasks-test-db on port 55432
+```
+
+The script is idempotent: it drops and recreates the container every run, so a
+stale or half-migrated test database is never a state you have to debug, only one
+you re-run the script out of. The schema is never copied from production and never
+hand-written — the script replays the real files from `supabase/migrations/` in
+order, the same way production's schema was built, so a migration applied to only
+one of the two databases shows up as a test failure instead of staying invisible.
+
+Add to `.env.local`:
+
+```
+TEST_DATABASE_URL=postgresql://postgres:testpass@127.0.0.1:55432/tasks_test
+```
+
+`vitest.setup.ts` runs before any test file's own imports and points
+`DATABASE_URL` at `TEST_DATABASE_URL` — this has to happen before `lib/db.ts` is
+imported, because it opens its connection pool at module load time, not lazily.
+The setup file also refuses to run at all if `DATABASE_URL` is set but
+`TEST_DATABASE_URL` is missing or identical to it, so a lost or mistyped test
+variable fails loudly instead of quietly falling through to production.
 
 The apply/undo tests run against a real Postgres rather than mocks: they assert on
 table contents after the transaction and after the rollback. That is also why the
