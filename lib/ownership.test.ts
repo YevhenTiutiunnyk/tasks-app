@@ -66,6 +66,27 @@ vi.mock('web-push', () => ({
   },
 }));
 
+// Подмена нужна ровно одному тесту — проверке, что роут читает часовой пояс
+// именно текущего владельца, а не соседнего. Через реальное время это не
+// проверить надёжно: разница поясов должна быть огромной, чтобы гарантированно
+// увести дату мимо окна loadRange, а такая разница считается от момента
+// запуска и плавает. Подмена частичная (importOriginal) — normalizeTimezone
+// и selectDue остаются настоящими, подменяется только nowInZone, и то лишь
+// для зон, явно занесённых в zoneOverrides; 'UTC' и остальные идут как есть.
+const zoneOverrides = vi.hoisted(() => ({
+  map: new Map<string, { today: string; nowMinute: number }>(),
+}));
+vi.mock('./notify', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./notify')>();
+  return {
+    ...actual,
+    nowInZone: (timezone: string, at?: Date) => {
+      const override = zoneOverrides.map.get(timezone);
+      return override ?? actual.nowInZone(timezone, at);
+    },
+  };
+});
+
 // Роуты импортируются после vi.mock намеренно: подмена должна быть объявлена
 // раньше, чем модуль роута потянет за собой настоящий require-user.
 import { PATCH as taskPatch, DELETE as taskDelete } from '@/app/api/task/route';
@@ -871,6 +892,51 @@ run('изоляция по владельцу', () => {
       await removeSubscription(idA, endpointA);
       await sql`delete from tasks where id in (${taskA}, ${taskB})`;
       await sql`delete from notifications_sent where key = ${taskA}`;
+    });
+
+    it('часовой пояс читается для текущего владельца, а не для соседнего', async () => {
+      // Придуманные зоны, разнесённые на месяц в zoneOverrides, а не реальные
+      // часовые пояса: перепутанный getTimezone(userId) увёл бы дату мимо
+      // диапазона loadRange предсказуемо, а не в зависимости от момента
+      // прогона.
+      const ZONE_A = 'zz-zone-a';
+      const ZONE_B = 'zz-zone-b';
+      zoneOverrides.map.set(ZONE_A, { today: '2030-06-01', nowMinute: 600 });
+      zoneOverrides.map.set(ZONE_B, { today: '2030-07-01', nowMinute: 600 });
+
+      await saveTimezone(idA, ZONE_A);
+      await saveTimezone(idB, ZONE_B);
+      await saveSettings(idA, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+      await saveSettings(idB, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+
+      const taskA = await insertDueTask(idA, 'ZZ-пояс A', '2030-06-01', 605);
+      const taskB = await insertDueTask(idB, 'ZZ-пояс B', '2030-07-01', 605);
+
+      const endpointA = 'https://zz.invalid/push/zone-a';
+      const endpointB = 'https://zz.invalid/push/zone-b';
+      await addSubscription(idA, { endpoint: endpointA, p256dh: 'pza', auth: 'aza' });
+      await addSubscription(idB, { endpoint: endpointB, p256dh: 'pzb', auth: 'azb' });
+
+      pushed.calls = [];
+      const response = await notifyPost(new Request('http://t/api/notify', {
+        method: 'POST',
+        headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+      }));
+      expect(response.status).toBe(200);
+
+      const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
+      const forB = pushed.calls.filter((c) => c.endpoint === endpointB);
+      expect(forA).toHaveLength(1);
+      expect(forB).toHaveLength(1);
+      expect(JSON.parse(forA[0].payload).title).toBe('ZZ-пояс A');
+      expect(JSON.parse(forB[0].payload).title).toBe('ZZ-пояс B');
+
+      zoneOverrides.map.delete(ZONE_A);
+      zoneOverrides.map.delete(ZONE_B);
+      await removeSubscription(idA, endpointA);
+      await removeSubscription(idB, endpointB);
+      await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+      await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
     });
   });
 
