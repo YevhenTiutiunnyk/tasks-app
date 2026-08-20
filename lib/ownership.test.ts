@@ -313,6 +313,8 @@ run('изоляция по владельцу', () => {
     it('откат видит только свои пачки', async () => {
       // У варианта create в типе Operation обязательны все семь полей —
       // необязательных там нет, частичный объект не скомпилируется.
+      // Задача и правило в одной пачке: откат разбирает их разными ветками
+      // (снимок tasks и снимок recurrences), и уцелеть должны обе.
       const { batchId } = await applyOperations(idA, 'ZZ-пачка A', [
         {
           type: 'create',
@@ -324,10 +326,35 @@ run('изоляция по владельцу', () => {
           categoryId: null,
           recurrence: null,
         },
+        {
+          type: 'create',
+          title: 'ZZ-правило из пачки A',
+          date: null,
+          startMinute: 480,
+          durationMinutes: 60,
+          allDay: false,
+          categoryId: null,
+          recurrence: { weekdays: [3], startsOn: FOURTH, endsOn: null },
+        },
       ]);
       // Чужой идентификатор пачки не должен откатываться под другим владельцем.
-      expect(await undoBatch(idB, batchId)).toBe(false);
+      const undoneByB = await undoBatch(idB, batchId);
+
+      // Про строки спрашиваем раньше, чем про ответ, и это не косметика.
+      // Откат, который отчитался «не моё», но успел пройтись по снимку, унёс бы
+      // задачу и правило молча. Проверь сперва ответ — тест упал бы на «true
+      // вместо false», и по такому сообщению не понять, пропало что-то или нет.
+      expect((await getTasksBetween(idA, DATE, DATE)).map((t) => t.title))
+        .toContain('ZZ-из пачки A');
+      expect((await getRecurrences(idA)).map((r) => r.title))
+        .toContain('ZZ-правило из пачки A');
+      expect(undoneByB).toBe(false);
+
       expect(await undoBatch(idA, batchId)).toBe(true);
+      expect((await getTasksBetween(idA, DATE, DATE)).map((t) => t.title))
+        .not.toContain('ZZ-из пачки A');
+      expect((await getRecurrences(idA)).map((r) => r.title))
+        .not.toContain('ZZ-правило из пачки A');
     });
 
     it('откат удаления возвращает задачу владельцу, а не в никуда', async () => {
@@ -476,6 +503,12 @@ run('изоляция по владельцу', () => {
         }),
       );
       expect(await foreign.json()).toMatchObject({ failed: [] });
+      // Сначала про саму задачу: у роута выборка и запись — два отдельных
+      // запроса, и фильтр нужен обоим. Задача A заводилась на весь день,
+      // времени у неё нет и появиться ему неоткуда. Спроси раньше про счётчик
+      // вызовов — тест упал бы на нём и до чужого времени в строке не дошёл.
+      const [untouched] = await sql`select start_minute from tasks where id = ${task.id}`;
+      expect(untouched.start_minute).toBeNull();
       // Ноль вызовов — единственный признак, отличающий «не нашлось» от
       // «нашлось чужое, но правка не применилась»: ответ у них одинаковый.
       expect(clarify.calls).toBe(0);
