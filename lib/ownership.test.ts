@@ -581,6 +581,23 @@ run('изоляция по владельцу', () => {
       );
       expect(response.status).toBe(200);
       expect((await taskOfA()).done).toBe(false);
+
+      // Контроль на то, что путь живой — как в проверке уточнения ниже.
+      // Без него регресс, превращающий роут в no-op ДЛЯ ВСЕХ (потерянный
+      // update, отвалившийся разбор тела), оставил бы тест зелёным:
+      // «чужое не изменилось» верно и тогда, когда не меняется вообще ничего.
+      try {
+        session.userId = idA;
+        const mine = await taskPatch(
+          request('http://t/api/task', 'PATCH', { today: DATE, taskId: task.id, done: true }),
+        );
+        expect(mine.status).toBe(200);
+        expect((await taskOfA()).done).toBe(true);
+      } finally {
+        // Задача из beforeAll — общая опора нескольких проверок; возвращаем
+        // её в исходное состояние, чтобы соседи не зависели от порядка.
+        await sql`update tasks set done = false where id = ${task.id}`;
+      }
     });
 
     it('правка серии по чужому правилу ничего не меняет', async () => {
@@ -593,6 +610,21 @@ run('изоляция по владельцу', () => {
       expect(response.status).toBe(200);
       const [rule] = await sql`select title from recurrences where id = ${ruleA}`;
       expect(rule.title).toBe('ZZ-правило A');
+
+      // Тот же контроль живого пути: правка своей серии обязана проходить.
+      try {
+        session.userId = idA;
+        const mine = await taskPatch(
+          request('http://t/api/task', 'PATCH', {
+            today: DATE, taskId: `occ:${ruleA}:${DATE}`, scope: 'series', title: 'ZZ-правило A*',
+          }),
+        );
+        expect(mine.status).toBe(200);
+        const [renamed] = await sql`select title from recurrences where id = ${ruleA}`;
+        expect(renamed.title).toBe('ZZ-правило A*');
+      } finally {
+        await sql`update recurrences set title = 'ZZ-правило A' where id = ${ruleA}`;
+      }
     });
 
     it('удаление серии по чужому правилу ничего не удаляет', async () => {
@@ -605,6 +637,22 @@ run('изоляция по владельцу', () => {
       expect(response.status).toBe(200);
       const [rule] = await sql`select count(*)::int c from recurrences where id = ${ruleA}`;
       expect(rule.c).toBe(1);
+
+      // Контроль живого пути. Удаляется одноразовое правило B, а не ruleA
+      // и не ruleB: те — опора остальных проверок файла, а удаление серии
+      // уносит каскадом и материализованные по ней задачи.
+      const [temp] = await sql`
+        insert into recurrences (title, weekdays, start_minute, duration_minutes, starts_on, user_id)
+        values ('ZZ-правило B под удаление', ${[1]}, 600, 60, ${DATE}, ${idB}) returning id
+      `;
+      const mine = await taskDelete(
+        request('http://t/api/task', 'DELETE', {
+          today: DATE, taskId: `occ:${temp.id}:${DATE}`, scope: 'series',
+        }),
+      );
+      expect(mine.status).toBe(200);
+      const [gone] = await sql`select count(*)::int c from recurrences where id = ${temp.id}`;
+      expect(gone.c).toBe(0);
     });
 
     it('уточнение по чужой задаче даже не доходит до разбора', async () => {
@@ -1039,6 +1087,79 @@ run('изоляция по владельцу', () => {
       } finally {
         zoneOverrides.map.delete(ZONE_A);
         zoneOverrides.map.delete(ZONE_B);
+        await removeSubscription(idA, endpointA);
+        await removeSubscription(idB, endpointB);
+        await sql`delete from tasks where id in (${taskA}, ${taskB})`;
+        await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
+      }
+    });
+
+    it('сбой у одного владельца не оставляет без уведомлений остальных', async () => {
+      // Записанное решение роута: try/catch стоит ВНУТРИ тела цикла по
+      // владельцам, а не снаружи него, — падение на одном не должно уносить
+      // весь прогон. До сих пор это свойство не проверялось ничем: тест
+      // «неудачная доставка» бьёт по внутреннему try/catch вокруг
+      // sendNotification, а внешний не исполнялся ни разу.
+      //
+      // Ломаем не доставку, а обработку владельца целиком, и до неё:
+      // мусорный пояс кладётся сырым SQL мимо saveTimezone (тот пояс не
+      // проверяет — normalizeTimezone зовётся выше по стеку), и nowInZone
+      // бросает RangeError в самом начале итерации, ещё до отправки.
+      await saveTimezone(idA, 'UTC');
+      await saveTimezone(idB, 'UTC');
+      await saveSettings(idA, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+      await saveSettings(idB, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+
+      const { today, nowMinute } = nowInZone('UTC');
+      const pos = inMinutes(today, nowMinute, 10);
+
+      const taskA = await insertDueTask(idA, 'ZZ-сбой A', pos.date, pos.startMinute);
+      const taskB = await insertDueTask(idB, 'ZZ-сбой B', pos.date, pos.startMinute);
+
+      const endpointA = 'https://zz.invalid/push/broken-a';
+      const endpointB = 'https://zz.invalid/push/broken-b';
+      await addSubscription(idA, { endpoint: endpointA, p256dh: 'pba', auth: 'aba' });
+      await addSubscription(idB, { endpoint: endpointB, p256dh: 'pbb', auth: 'abb' });
+
+      // Кого ломать — не выбор, а вычисление. Порядок владельцев в роуте
+      // задаёт getUsersWithSubscriptions (select distinct, порядок строк
+      // не определён), и сломать надо того, кто в ЭТОМ прогоне идёт первым:
+      // сломай второго — и первый успел бы получить своё ещё до исключения,
+      // а тогда тест остался бы зелёным и с try/catch снаружи цикла, то есть
+      // не проверял бы ничего.
+      const order = (await getUsersWithSubscriptions())
+        .filter((id) => id === idA || id === idB);
+      expect(order).toEqual(expect.arrayContaining([idA, idB]));
+      expect(order).toHaveLength(2);
+      const [broken, intact] = order;
+      const endpointOf: Record<string, string> = { [idA]: endpointA, [idB]: endpointB };
+      const titleOf: Record<string, string> = { [idA]: 'ZZ-сбой A', [idB]: 'ZZ-сбой B' };
+
+      // Уборка — в finally, как и в трёх тестах выше.
+      try {
+        await sql`
+          update user_settings set timezone = 'ZZ-not-a-timezone' where user_id = ${broken}
+        `;
+
+        pushed.calls = [];
+        const response = await notifyPost(new Request('http://t/api/notify', {
+          method: 'POST',
+          headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+        }));
+        // Прогон в целом удался: сбой одного владельца — не пятисотка.
+        expect(response.status).toBe(200);
+
+        // У сломанного не ушло ничего — иначе исключение случилось не там,
+        // где задумано, и тест проверял бы не то.
+        expect(pushed.calls.filter((c) => c.endpoint === endpointOf[broken])).toHaveLength(0);
+
+        // А второй получил своё, хотя первый упал. Это и есть проверяемое
+        // свойство: перенеси try/catch наружу цикла — здесь станет ноль.
+        const forIntact = pushed.calls.filter((c) => c.endpoint === endpointOf[intact]);
+        expect(forIntact).toHaveLength(1);
+        expect(JSON.parse(forIntact[0].payload).title).toBe(titleOf[intact]);
+      } finally {
+        await saveTimezone(broken, 'UTC');
         await removeSubscription(idA, endpointA);
         await removeSubscription(idB, endpointB);
         await sql`delete from tasks where id in (${taskA}, ${taskB})`;
