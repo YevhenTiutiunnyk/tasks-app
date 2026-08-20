@@ -320,6 +320,14 @@ run('изоляция по владельцу', () => {
     expect(forA.notifyBeforeMinutes).toBe(15);
     expect(forA.categories.map((c) => c.id)).toContain('work');
     expect(forA).toEqual(DEFAULT_SETTINGS);
+
+    // Равно — но не то же самое. DEFAULT_SETTINGS одна на весь процесс
+    // сервера и общая на всех, у кого своей строки ещё нет; отданная по
+    // ссылке, она превратила бы первую же мутацию у вызывающего в чужое
+    // умолчание. Вложенное — тоже своё: categories это массив объектов.
+    expect(forA).not.toBe(DEFAULT_SETTINGS);
+    expect(forA.categories).not.toBe(DEFAULT_SETTINGS.categories);
+    expect(forA.categories[0]).not.toBe(DEFAULT_SETTINGS.categories[0]);
   });
 
   it('сохранённые настройки не протекают к другому', async () => {
