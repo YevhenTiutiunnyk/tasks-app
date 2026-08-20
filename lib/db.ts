@@ -71,7 +71,14 @@ export async function getExceptions(userId: string): Promise<RecurrenceException
 
 export async function getSettings(userId: string): Promise<Settings> {
   const [row] = await sql`select * from user_settings where user_id = ${userId}`;
-  if (!row) return DEFAULT_SETTINGS;
+  // Копия, а не сама константа. DEFAULT_SETTINGS живёт на уровне модуля,
+  // то есть одна на весь процесс сервера и на всех, у кого своей строки
+  // ещё нет. Отдай её по ссылке — и первая же мутация у вызывающего
+  // (хоть settings.categories.push, хоть правка поля перед сохранением)
+  // станет умолчанием для следующего человека. structuredClone, а не
+  // {...DEFAULT_SETTINGS}: categories — массив объектов, и поверхностная
+  // копия оставила бы их общими.
+  if (!row) return structuredClone(DEFAULT_SETTINGS);
   return {
     workStartMinute: row.work_start_minute,
     workEndMinute: row.work_end_minute,
