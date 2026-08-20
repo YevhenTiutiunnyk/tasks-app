@@ -66,7 +66,7 @@ export async function POST(request: Request) {
   const [tasks, alreadySent, subscriptions] = await Promise.all([
     loadRange(userId, today, addDays(today, 1)),
     getSentKeys(),
-    getSubscriptions(),
+    getSubscriptions(userId),
   ]);
 
   const due = selectDue({
@@ -111,7 +111,7 @@ export async function POST(request: Request) {
         // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
         // копятся и каждый запуск тратит время на заведомо провальные запросы.
         if (status === 404 || status === 410) {
-          await removeSubscription(subscription.endpoint);
+          await removeSubscription(userId, subscription.endpoint);
         } else {
           console.error('Не удалось отправить уведомление', status, error);
         }

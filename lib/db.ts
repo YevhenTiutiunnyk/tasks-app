@@ -153,23 +153,41 @@ export interface PushSubscriptionRow {
   auth: string;
 }
 
-export async function getSubscriptions(): Promise<PushSubscriptionRow[]> {
-  const rows = await sql`select endpoint, p256dh, auth from push_subscriptions`;
+export async function getSubscriptions(userId: string): Promise<PushSubscriptionRow[]> {
+  const rows = await sql`
+    select endpoint, p256dh, auth from push_subscriptions where user_id = ${userId}
+  `;
   return rows.map((row) => ({ endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth }));
 }
 
-export async function addSubscription(subscription: PushSubscriptionRow): Promise<void> {
+export async function addSubscription(
+  userId: string,
+  subscription: PushSubscriptionRow,
+): Promise<void> {
   // Повторное нажатие кнопки в настройках не должно быть ошибкой: браузер
-  // отдаёт ту же самую подписку, пока разрешение не отозвано.
+  // отдаёт ту же подписку, пока разрешение не отозвано. Владельца обновляем
+  // на случай, если устройством раньше пользовался другой человек.
   await sql`
-    insert into push_subscriptions (endpoint, p256dh, auth)
-    values (${subscription.endpoint}, ${subscription.p256dh}, ${subscription.auth})
-    on conflict (endpoint) do nothing
+    insert into push_subscriptions (endpoint, p256dh, auth, user_id)
+    values (${subscription.endpoint}, ${subscription.p256dh}, ${subscription.auth}, ${userId})
+    on conflict (endpoint) do update set user_id = ${userId}
   `;
 }
 
-export async function removeSubscription(endpoint: string): Promise<void> {
-  await sql`delete from push_subscriptions where endpoint = ${endpoint}`;
+export async function removeSubscription(userId: string, endpoint: string): Promise<void> {
+  // Владелец в условии обязателен: без него чужую подписку снимает любой,
+  // кто знает её endpoint.
+  await sql`delete from push_subscriptions where endpoint = ${endpoint} and user_id = ${userId}`;
+}
+
+/**
+ * Владельцы, которым есть что слать. Список берётся из подписок, а не из
+ * "user": рассылать нечего тем, кто уведомления не включал, а в "user"
+ * попадают строки от отвергнутых белым списком попыток входа.
+ */
+export async function getUsersWithSubscriptions(): Promise<string[]> {
+  const rows = await sql`select distinct user_id from push_subscriptions where user_id is not null`;
+  return rows.map((row) => row.user_id as string);
 }
 
 /** Ключи задач, о которых уже уведомляли. Ключ — это task.id. */

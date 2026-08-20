@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from './db';
 import {
+  addSubscription,
   getExceptions,
   getRecurrences,
   getSettings,
+  getSubscriptions,
   getTasksBetween,
   getTimezone,
+  getUsersWithSubscriptions,
+  removeSubscription,
   saveSettings,
   saveTimezone,
 } from './db';
@@ -37,6 +41,7 @@ vi.mock('./parse-clarify', () => ({
 import { PATCH as taskPatch, DELETE as taskDelete } from '@/app/api/task/route';
 import { POST as clarifyPost } from '@/app/api/clarify/route';
 import { POST as undoPost } from '@/app/api/undo/route';
+import { POST as pushPost, DELETE as pushDelete } from '@/app/api/push/route';
 
 // Тестовые пользователи заводятся в БОЕВОЙ таблице "user" — другой базы нет.
 // Домен .invalid зарезервирован стандартом и не может принадлежать человеку.
@@ -95,6 +100,10 @@ async function clean() {
   await sql`delete from tasks where user_id in (${idA}, ${idB}, ${idC})`;
   await sql`delete from recurrences where user_id in (${idA}, ${idB}, ${idC})`;
   await sql`delete from user_settings where user_id in (${idA}, ${idB}, ${idC})`;
+  // Каскад на push_subscriptions.user_id снял бы эти строки и сам при
+  // удалении "user" ниже, но чистим явно — как и остальные таблицы здесь,
+  // чтобы порядок был виден и не зависел от свойств внешнего ключа.
+  await sql`delete from push_subscriptions where user_id in (${idA}, ${idB}, ${idC})`;
   await sql`delete from "user" where email in (${A}, ${B}, ${C})`;
 
   // А теперь — ничьи строки, по названию, а не по владельцу. Так убирается
@@ -115,6 +124,7 @@ async function clean() {
   )`;
   await sql`delete from recurrences where user_id is null and title like 'ZZ-%'`;
   await sql`delete from command_log where user_id is null and text like 'ZZ-%'`;
+  await sql`delete from push_subscriptions where user_id is null and endpoint like 'https://zz.invalid/%'`;
 }
 
 // Один внешний блок на чтение и на запись: пользователи, задачи и правила
@@ -614,6 +624,108 @@ run('изоляция по владельцу', () => {
       expect(await response.json()).toMatchObject({ undone: false });
       expect((await getTasksBetween(idA, FOURTH, FOURTH)).map((t) => t.title))
         .toEqual(['ZZ-не отдам']);
+    });
+  });
+
+  describe('изоляция подписок на уведомления', () => {
+    it('подписка одного не видна другому', async () => {
+      await addSubscription(idA, { endpoint: 'https://zz.invalid/push/a', p256dh: 'pA', auth: 'aA' });
+      await addSubscription(idB, { endpoint: 'https://zz.invalid/push/b', p256dh: 'pB', auth: 'aB' });
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint))
+        .toEqual(['https://zz.invalid/push/a']);
+      expect((await getSubscriptions(idB)).map((s) => s.endpoint))
+        .toEqual(['https://zz.invalid/push/b']);
+
+      await removeSubscription(idA, 'https://zz.invalid/push/a');
+      await removeSubscription(idB, 'https://zz.invalid/push/b');
+    });
+
+    it('подписка с уже известного устройства переходит новому владельцу', async () => {
+      // on conflict (endpoint) do update: один и тот же браузер мог раньше
+      // принадлежать другому человеку. Владелец обязан смениться, а не
+      // остаться прежним и не задвоиться.
+      const endpoint = 'https://zz.invalid/push/shared';
+      await addSubscription(idA, { endpoint, p256dh: 'p1', auth: 'a1' });
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+
+      await addSubscription(idC, { endpoint, p256dh: 'p1', auth: 'a1' });
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+      expect((await getSubscriptions(idC)).map((s) => s.endpoint)).toContain(endpoint);
+
+      await removeSubscription(idC, endpoint);
+    });
+
+    it('снять чужую подписку по известному endpoint не удаётся', async () => {
+      // Пункт 4 брифа: единственное место в задаче, где потеря владельца в
+      // условии даёт видимый вред прямо сегодня — endpoint не секрет.
+      const endpoint = 'https://zz.invalid/push/guard';
+      await addSubscription(idA, { endpoint, p256dh: 'p2', auth: 'a2' });
+
+      await removeSubscription(idB, endpoint);
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+
+      await removeSubscription(idA, endpoint);
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
+    });
+
+    it('список для рассылки берётся из подписок, а не из "user"', async () => {
+      // C заведён только в "user" (как и отвергнутые белым списком попытки
+      // входа) и ни разу не подписывался — рассылать ему нечего, и его не
+      // должно быть в списке, даже несмотря на строку в "user".
+      const endpoint = 'https://zz.invalid/push/list';
+      await addSubscription(idA, { endpoint, p256dh: 'p3', auth: 'a3' });
+
+      const owners = await getUsersWithSubscriptions();
+      expect(owners).toContain(idA);
+      expect(owners).not.toContain(idC);
+
+      await removeSubscription(idA, endpoint);
+    });
+  });
+
+  describe('изоляция подписок в роуте push', () => {
+    function pushRequest(method: string, body: unknown) {
+      return new Request('http://t/api/push', {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('POST сохраняет владельца из сессии', async () => {
+      // Подписка B заводится первой и нарочно не убирается до проверки:
+      // toEqual с ровно одним элементом красит тест и при неподключённом
+      // requireUser (тогда владелец не пишется вовсе), и при потерянном
+      // фильтре в getSubscriptions (тогда вернулись бы обе строки).
+      session.userId = idB;
+      await pushPost(pushRequest('POST', {
+        endpoint: 'https://zz.invalid/push/route-b', keys: { p256dh: 'rpb', auth: 'rab' },
+      }));
+
+      session.userId = idA;
+      const response = await pushPost(pushRequest('POST', {
+        endpoint: 'https://zz.invalid/push/route-a', keys: { p256dh: 'rp', auth: 'ra' },
+      }));
+      expect(response.status).toBe(200);
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint))
+        .toEqual(['https://zz.invalid/push/route-a']);
+
+      await removeSubscription(idA, 'https://zz.invalid/push/route-a');
+      await removeSubscription(idB, 'https://zz.invalid/push/route-b');
+    });
+
+    it('DELETE не снимает чужую подписку', async () => {
+      const endpoint = 'https://zz.invalid/push/route-guard';
+      session.userId = idA;
+      await pushPost(pushRequest('POST', { endpoint, keys: { p256dh: 'rp2', auth: 'ra2' } }));
+
+      session.userId = idB;
+      await pushDelete(pushRequest('DELETE', { endpoint }));
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).toContain(endpoint);
+
+      session.userId = idA;
+      await pushDelete(pushRequest('DELETE', { endpoint }));
+      expect((await getSubscriptions(idA)).map((s) => s.endpoint)).not.toContain(endpoint);
     });
   });
 
