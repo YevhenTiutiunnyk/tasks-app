@@ -18,6 +18,9 @@ export default function SettingsPage() {
   const [loadError, setLoadError] = useState('');
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [signOutError, setSignOutError] = useState('');
+  // Ключ для PushToggle: меняется после попытки снять подписку при выходе —
+  // см. finally в signOut, там же и зачем.
+  const [pushEpoch, setPushEpoch] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,24 +101,48 @@ export default function SettingsPage() {
    */
   async function releasePush() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    const registration = await navigator.serviceWorker.ready;
+
+    // getRegistration(), а не ready. ready по спецификации НИКОГДА не
+    // отвергается: нет активной регистрации — промис просто висит вечно.
+    // А регистрация в app/sw-register.tsx свою ошибку глотает в console.warn,
+    // так что «serviceWorker есть, но /sw.js не зарегистрировался» — рабочее
+    // состояние приложения, а не небылица. На ready это означало бы вечное
+    // ожидание здесь, signOutBusy навсегда в true и кнопку в состоянии «…»:
+    // выйти нельзя вообще. Причём именно на общем устройстве — там, ради чего
+    // всё это и делается. getRegistration() разрешается в undefined, когда
+    // регистрации нет, и развилка становится обычной проверкой.
+    //
+    // Гонку с таймаутом (Promise.race) не берём: она превращает отсутствие
+    // регистрации в «подождите N секунд перед выходом» и всё равно требует
+    // решить, что делать по истечении, — при том что ответ известен сразу.
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration) return;
     const subscription = await registration.pushManager.getSubscription();
     if (!subscription) return;
 
-    let serverFailure = '';
+    let failure = '';
+    let dropped = false;
     try {
       const response = await fetch('/api/push', {
         method: 'DELETE',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ endpoint: subscription.endpoint }),
       });
-      if (!response.ok) serverFailure = `сервер ответил ${response.status}`;
+      if (!response.ok) failure = `сервер ответил ${response.status}`;
     } catch {
-      serverFailure = 'нет связи с сервером';
+      failure = 'нет связи с сервером';
     } finally {
-      await subscription.unsubscribe();
+      dropped = await subscription.unsubscribe();
     }
-    if (serverFailure) throw new Error(`не удалось снять подписку: ${serverFailure}`);
+    // unsubscribe отдаёт false, а не бросает, когда снять не удалось. Молча
+    // принять этот false — худший из исходов: строку с сервера мы к этому
+    // моменту уже убрали, браузерная подписка жива, и следующий человек
+    // увидит в PushToggle «Включены на этом устройстве», не получая при этом
+    // ни одного уведомления.
+    if (!dropped) {
+      failure = failure ? `${failure}; подписка в браузере осталась` : 'подписка в браузере осталась';
+    }
+    if (failure) throw new Error(`не удалось снять подписку: ${failure}`);
   }
 
   async function signOut() {
@@ -141,6 +168,18 @@ export default function SettingsPage() {
       // пути в полях лежит endpoint подписки, а он адрес устройства
       // (пункт 6 брифа — адресам в логах хода нет).
       console.error('выход:', cause instanceof Error ? cause.message : 'сбой снятия подписки');
+    } finally {
+      // Число в key заставляет PushToggle смонтироваться заново и перечитать
+      // состояние из браузера. Нужно это ровно для одного случая: подписку
+      // сняли, а authClient.signOut() ниже отказал — человек остался
+      // в аккаунте на той же странице, где переключатель всё ещё показывает
+      // «Включены на этом устройстве», прочитанное при первой загрузке.
+      // Уведомлений он больше не получит, и знать об этом должен. В удачной
+      // ветке перерисовка не стоит ничего: страница тут же перезагружается.
+      // В finally, а не в конце try: снятие могло свалиться уже ПОСЛЕ
+      // unsubscribe (например на непринятом сервером DELETE), и состояние
+      // переключателя всё равно устарело.
+      setPushEpoch((epoch) => epoch + 1);
     }
 
     const { error: failure } = await authClient.signOut();
@@ -200,7 +239,7 @@ export default function SettingsPage() {
         <p className="text-xs text-muted">Этот текст уходит в каждый запрос вместе с фразой.</p>
       </section>
 
-      <PushToggle />
+      <PushToggle key={pushEpoch} />
 
       <section className="space-y-2">
         <h2 className="text-sm font-medium">За сколько предупреждать</h2>
