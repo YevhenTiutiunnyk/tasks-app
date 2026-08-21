@@ -100,8 +100,8 @@ DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
 against production. Cleanup in all of them is scoped to their own rows (by owner id
 or by the `zz-`/`.invalid` test addresses), so pointing them at the wrong database
 would be wrong, not destructive — but `vitest.setup.ts` refuses to start at all if
-`DATABASE_URL` is set without a `TEST_DATABASE_URL` pointing at a genuinely
-different database, so that mistake isn't one you can actually make.
+`DATABASE_URL` is set without a `TEST_DATABASE_URL` on a loopback or private
+address, so that mistake isn't one you can actually make.
 
 ```bash
 scripts/test-db.sh   # (re)creates the container tasks-test-db on port 55432
@@ -124,16 +124,25 @@ TEST_DATABASE_URL=postgresql://postgres:testpass@127.0.0.1:55432/tasks_test
 `DATABASE_URL` at `TEST_DATABASE_URL` — this has to happen before `lib/db.ts` is
 imported, because it opens its connection pool at module load time, not lazily.
 The setup file also refuses to run at all if `DATABASE_URL` is set but
-`TEST_DATABASE_URL` is missing or points at the same database, so a lost or
-mistyped test variable fails loudly instead of quietly falling through to
-production. "The same database" is decided by parsing both URLs and comparing
-host and database name, not by comparing the strings: `postgres://` versus
-`postgresql://`, an extra `?sslmode=require` or the other Supabase port are all
-the same database written differently.
+`TEST_DATABASE_URL` is missing, unparseable, or not a loopback/private address,
+so a lost or mistyped test variable fails loudly instead of quietly falling
+through to production.
+
+The main condition is deliberately not "different from production" but "on this
+machine or its private network". Comparing against the production URL cannot be
+made trustworthy: one Supabase database is handed out under two different host
+names — `db.<ref>.supabase.co:5432` directly and
+`aws-0-<region>.pooler.supabase.com:6543` through the pooler — and both sit next
+to each other in the project dashboard, so pasting the "other" one into
+`TEST_DATABASE_URL` is the most believable mistake there is. A production address
+is public by definition and fails the loopback/private rule in whatever form it
+is written. A secondary check still parses both URLs and refuses when host and
+database name match (the port is ignored on purpose: 5432 and 6543 are two doors
+into the same Supabase database).
 
 The apply/undo tests run against a real Postgres rather than mocks: they assert on
 table contents after the transaction and after the rollback. That Postgres is the
-local container, so the whole suite takes about a second. The raised per-test
+local container, so the whole suite takes 2.4–2.5 seconds. The raised per-test
 timeout in `vitest.config.ts` is a leftover from when these tests went to the
 production database over the network; it stays as cheap headroom for a cold
 container, being a ceiling rather than a delay.
@@ -175,6 +184,20 @@ the migration has to come after the first login, not before it.
 5. `npm run dev`, open the app and sign in with Google. This creates your row in
    `"user"`. The schedule itself does not work yet — the owner columns and the
    `user_settings` table do not exist — and that is expected at this point.
+
+   ⚠️ Between this step and the next one, keep the app to yourself. A row in
+   `"user"` is created by **any** Google sign-in attempt, including one the
+   whitelist turns away: the allow check runs on session creation, i.e. after
+   Better Auth has already inserted the user (`lib/auth.ts`,
+   `databaseHooks.session.create.before`). The outsider gets no session but does
+   leave a row behind — and phase 1's guard then refuses to run: "Ожидалась
+   ровно одна строка в "user", найдено 2". Fix it by deleting the extra rows
+   before applying the migration (sessions and provider links cascade away):
+
+   ```sql
+   delete from "user" where email <> 'you@example.com';
+   ```
+
 6. Apply **phase 1** of `0004_ownership.sql`: everything from the top of the file
    down to its `commit;`. It adds the `user_id` columns, assigns every existing
    row to the one user found in `"user"`, and creates `user_settings`.
