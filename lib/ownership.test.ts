@@ -423,14 +423,27 @@ run('изоляция по владельцу', () => {
         },
       ]);
 
-      expect((await getTasksBetween(idA, FOURTH, FOURTH)).map((t) => t.title))
-        .toEqual(['ZZ-новая A']);
-      expect(await getTasksBetween(idB, FOURTH, FOURTH)).toEqual([]);
-      expect((await getRecurrences(idA)).map((r) => r.title))
-        .toEqual(['ZZ-правило A', 'ZZ-новое правило A']);
-      expect((await getRecurrences(idB)).map((r) => r.title)).toEqual(['ZZ-правило B']);
-
-      await undoBatch(idA, batchId);
+      // Уборка — в finally: без него одно падение здесь превращается в три.
+      // Правило из этой пачки остаётся в базе, и его подхватывают два более
+      // поздних теста отката, считающие правила владельца A поимённо.
+      try {
+        expect((await getTasksBetween(idA, FOURTH, FOURTH)).map((t) => t.title))
+          .toEqual(['ZZ-новая A']);
+        expect(await getTasksBetween(idB, FOURTH, FOURTH)).toEqual([]);
+        // Сравнение как множеств, а не по порядку. Порядок строк getRecurrences
+        // не определён ничем: select без order by отдаёт их в физическом
+        // порядке кучи, а clean() в beforeAll освобождает слоты, которые FSM
+        // потом переиспользует, — вставленное позже правило может лечь раньше
+        // вставленного раньше. Утверждение toEqual([...]) на точный порядок
+        // проверяло не владельца, а везение: примерно раз в тридцать полных
+        // прогонов оно краснело на ровном месте. Здесь важно, ЧТО досталось
+        // владельцу, а не в каком порядке база решила это вернуть.
+        expect((await getRecurrences(idA)).map((r) => r.title).sort())
+          .toEqual(['ZZ-новое правило A', 'ZZ-правило A']);
+        expect((await getRecurrences(idB)).map((r) => r.title)).toEqual(['ZZ-правило B']);
+      } finally {
+        await undoBatch(idA, batchId);
+      }
     });
 
     it('откат видит только свои пачки', async () => {
@@ -1137,14 +1150,17 @@ run('изоляция по владельцу', () => {
       // не проверял бы ничего.
       const order = (await getUsersWithSubscriptions())
         .filter((id) => id === idA || id === idB);
-      expect(order).toEqual(expect.arrayContaining([idA, idB]));
-      expect(order).toHaveLength(2);
-      const [broken, intact] = order;
       const endpointOf: Record<string, string> = { [idA]: endpointA, [idB]: endpointB };
       const titleOf: Record<string, string> = { [idA]: 'ZZ-сбой A', [idB]: 'ZZ-сбой B' };
 
-      // Уборка — в finally, как и в трёх тестах выше.
+      // Уборка — в finally, как и в трёх тестах выше. Проверки про order —
+      // тоже внутри try, хотя и стоят первыми: снаружи их падение утекло бы
+      // подписками, задачами и настройками в следующие тесты.
       try {
+        expect(order).toEqual(expect.arrayContaining([idA, idB]));
+        expect(order).toHaveLength(2);
+        const [broken, intact] = order;
+
         await sql`
           update user_settings set timezone = 'ZZ-not-a-timezone' where user_id = ${broken}
         `;
@@ -1167,7 +1183,12 @@ run('изоляция по владельцу', () => {
         expect(forIntact).toHaveLength(1);
         expect(JSON.parse(forIntact[0].payload).title).toBe(titleOf[intact]);
       } finally {
-        await saveTimezone(broken, 'UTC');
+        // Пояс возвращается обоим, а не только сломанному: кого именно
+        // ломали, известно внутри try, а сюда попадают и падения до этого
+        // места. Лишний вызов ничего не стоит — saveTimezone не пишет, когда
+        // пояс уже тот же самый.
+        await saveTimezone(idA, 'UTC');
+        await saveTimezone(idB, 'UTC');
         await removeSubscription(idA, endpointA);
         await removeSubscription(idB, endpointB);
         await sql`delete from tasks where id in (${taskA}, ${taskB})`;
