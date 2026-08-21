@@ -83,7 +83,7 @@ nullable, потому что структурированный вывод тр
 
 ```bash
 npx vitest run                                                   # без базы: тесты, ходящие в неё, пропускаются
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # всё: 181 проходит, 7 пропущено
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # всё: 182 проходит, 7 пропущено
 ```
 
 Тесты, ходящие в базу (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,

@@ -43,10 +43,17 @@ export function rowToRecurrence(row: any): Recurrence {
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 export async function getTasksBetween(userId: string, from: string, to: string): Promise<Task[]> {
+  // id в хвосте — по той же причине, что и у getRecurrences ниже, и случай
+  // тут куда более частый: две встречи на 9:00 — обычное дело, а два правила
+  // повтора на одну минуту — редкость. Без тай-брейка равные по (дате,
+  // минуте) строки остаются в физическом порядке кучи, а он меняется от
+  // любой правки: update пишет новую версию строки в конец. То есть задача,
+  // которую подвинули или переименовали, молча переезжала бы вниз соседки
+  // на то же время — и обратно после VACUUM.
   const rows = await sql`
     select * from tasks
     where user_id = ${userId} and date >= ${from} and date <= ${to}
-    order by date, start_minute nulls first
+    order by date, start_minute nulls first, id
   `;
   return rows.map(rowToTask);
 }

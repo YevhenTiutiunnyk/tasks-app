@@ -92,7 +92,7 @@ as all-day".
 
 ```bash
 npx vitest run                                                   # no database: DB-backed tests skip
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 181 passing, 7 skipped
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 182 passing, 7 skipped
 ```
 
 DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
