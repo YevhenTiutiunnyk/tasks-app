@@ -3,12 +3,16 @@ import { addDays, isValidIsoDate, weekRange } from '@/lib/dates';
 import { getSettings, saveTimezone } from '@/lib/db';
 import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import { loadRange, loadWeek } from '@/lib/week';
 import { parseCommand } from '@/lib/parse';
 import { validateParseResult } from '@/lib/validate';
 import { applyOperations } from '@/lib/apply';
 
 export async function POST(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{ text?: string; today?: string; timezone?: string }>(request);
   if (!body) return badRequest('Не удалось разобрать тело запроса');
   const { text, today, timezone } = body;
@@ -27,11 +31,11 @@ export async function POST(request: Request) {
   // через VPN пояс не сдвинет. Планировщику уведомлений он нужен из базы:
   // браузера у него нет.
   const zone = timezone ? normalizeTimezone(timezone) : null;
-  const saveZone = zone ? saveTimezone(zone) : Promise.resolve();
+  const saveZone = zone ? saveTimezone(user.userId, zone) : Promise.resolve();
 
   const [contextTasks, settings] = await Promise.all([
-    loadRange(contextFrom, contextTo),
-    getSettings(),
+    loadRange(user.userId, contextFrom, contextTo),
+    getSettings(user.userId),
     saveZone,
   ]);
 
@@ -60,25 +64,25 @@ export async function POST(request: Request) {
       reply: parsed.reply,
       rejected: checked.rejected,
       needsTime: [],
-      week: await loadWeek(today),
+      week: await loadWeek(user.userId, today),
     });
   }
 
   let batchId: string;
   try {
-    ({ batchId } = await applyOperations(text, checked.operations));
+    ({ batchId } = await applyOperations(user.userId, text, checked.operations));
   } catch (error) {
     console.error('applyOperations failed', error);
     return NextResponse.json({ error: 'Не получилось сохранить изменения' }, { status: 500 });
   }
 
-  const week = await loadWeek(today);
+  const week = await loadWeek(user.userId, today);
 
   // Сопоставляем вопросы про время с уже созданными задачами. Ищем по всему
   // трёхнедельному диапазону, а не по одной видимой неделе: контекст модели
   // шире экрана, и «запиши врача на следующий понедельник» создаёт задачу
   // за её пределами — иначе вопрос про время молча потерялся бы.
-  const applied = await loadRange(contextFrom, contextTo);
+  const applied = await loadRange(user.userId, contextFrom, contextTo);
   const needsTime = checked.needsTime.flatMap((entry) => {
     const operation = checked.operations[entry.operationIndex];
     if (operation.type !== 'create') return [];

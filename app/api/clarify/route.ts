@@ -2,11 +2,15 @@ import { NextResponse } from 'next/server';
 import { isValidIsoDate } from '@/lib/dates';
 import { sql, toIsoDate } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import { isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseClarification } from '@/lib/parse-clarify';
 
 export async function POST(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     answers?: { taskId: string; text: string }[];
     today?: string;
@@ -25,7 +29,12 @@ export async function POST(request: Request) {
   const failed: string[] = [];
 
   for (const answer of answers) {
-    const [row] = await sql`select * from tasks where id = ${answer.taskId}`;
+    // Чужая задача пропускается ровно так же, как несуществующая, и до разбора
+    // фразы моделью дело не доходит. Ответь роут по-разному — и перебором
+    // идентификаторов узнавалось бы, что вообще есть в чужом расписании.
+    const [row] = await sql`
+      select * from tasks where id = ${answer.taskId} and user_id = ${user.userId}
+    `;
     if (!row) continue;
 
     let slot;
@@ -49,9 +58,9 @@ export async function POST(request: Request) {
         duration_minutes = ${slot.durationMinutes},
         all_day = false,
         updated_at = now()
-      where id = ${answer.taskId}
+      where id = ${answer.taskId} and user_id = ${user.userId}
     `;
   }
 
-  return NextResponse.json({ failed, week: await loadWeek(today) });
+  return NextResponse.json({ failed, week: await loadWeek(user.userId, today) });
 }

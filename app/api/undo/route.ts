@@ -3,9 +3,13 @@ import { isValidIsoDate } from '@/lib/dates';
 import { undoBatch } from '@/lib/apply';
 import { sql } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import { loadWeek } from '@/lib/week';
 
 export async function POST(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{ batchId?: string; today?: string }>(request);
   if (!body) return badRequest('Не удалось разобрать тело запроса');
   const { batchId, today } = body;
@@ -18,11 +22,17 @@ export async function POST(request: Request) {
   // до undoBatch, который упал бы на приведении к uuid, дело не доходит.
   // id desc как разрешение ничьей: created_at — момент начала транзакции,
   // и две пачки теоретически могут получить одинаковый.
-  const [latest] = await sql`select id from command_log order by created_at desc, id desc limit 1`;
+  //
+  // «Самая свежая» — своя, а не по всему журналу: иначе, пока другой человек
+  // отдаёт команды, отмена не работала бы ни у кого, кроме него.
+  const [latest] = await sql`
+    select id from command_log where user_id = ${user.userId}
+    order by created_at desc, id desc limit 1
+  `;
   if (!latest || latest.id !== batchId) {
-    return NextResponse.json({ undone: false, week: await loadWeek(today) });
+    return NextResponse.json({ undone: false, week: await loadWeek(user.userId, today) });
   }
 
-  const undone = await undoBatch(batchId);
-  return NextResponse.json({ undone, week: await loadWeek(today) });
+  const undone = await undoBatch(user.userId, batchId);
+  return NextResponse.json({ undone, week: await loadWeek(user.userId, today) });
 }

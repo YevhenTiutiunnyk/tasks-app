@@ -27,14 +27,26 @@ function LoginForm() {
   async function signIn() {
     setBusy(true);
     setError('');
-    const { error: failure } = await authClient.signIn.social({
-      provider: 'google',
-      callbackURL: '/',
-    });
-    // Бэкенд сообщает — экран молчит: девять дефектов подряд этого вида уже
-    // были в этом проекте. Причину показываем.
-    if (failure) {
-      setError(failure.message ?? 'Не получилось войти');
+    try {
+      const { error: failure } = await authClient.signIn.social({
+        provider: 'google',
+        callbackURL: '/',
+      });
+      // Бэкенд сообщает — экран молчит: девять дефектов подряд этого вида уже
+      // были в этом проекте. Причину показываем.
+      if (failure) {
+        setError(failure.message ?? 'Не получилось войти');
+        setBusy(false);
+      }
+      // При успехе busy не снимаем намеренно: браузер уходит на Google, и
+      // кнопка должна остаться неактивной до самого перехода.
+    } catch {
+      // Обрыв связи сюда приходит отказом промиса, а не как { error }:
+      // @better-fetch/fetch зовёт fetch без try. Без этого catch кнопка
+      // навсегда оставалась бы в «неактивна», а причина — только
+      // необработанным отказом в консоли. Тот же дефект был на выходе
+      // из аккаунта в app/settings/page.tsx.
+      setError('Нет связи с сервером');
       setBusy(false);
     }
   }

@@ -11,11 +11,11 @@ export interface WeekData {
   settings: Settings;
 }
 
-export async function loadRange(from: string, to: string): Promise<Task[]> {
+export async function loadRange(userId: string, from: string, to: string): Promise<Task[]> {
   const [stored, recurrences, exceptions] = await Promise.all([
-    getTasksBetween(from, to),
-    getRecurrences(),
-    getExceptions(),
+    getTasksBetween(userId, from, to),
+    getRecurrences(userId),
+    getExceptions(userId),
   ]);
   // Материализованные вхождения уже лежат в stored, а на их даты стоят исключения,
   // поэтому раскрытие их не продублирует.
@@ -26,8 +26,8 @@ export async function loadRange(from: string, to: string): Promise<Task[]> {
   );
 }
 
-export async function loadWeek(anchor: string): Promise<WeekData> {
+export async function loadWeek(userId: string, anchor: string): Promise<WeekData> {
   const { from, to } = weekRange(anchor);
-  const [tasks, settings] = await Promise.all([loadRange(from, to), getSettings()]);
+  const [tasks, settings] = await Promise.all([loadRange(userId, from, to), getSettings(userId)]);
   return { from, to, tasks, settings };
 }

@@ -3,13 +3,14 @@ import { isValidIsoDate } from '@/lib/dates';
 import { sql } from '@/lib/db';
 import { applyOperations } from '@/lib/apply';
 import { badRequest, readJson } from '@/lib/http';
+import { requireUser } from '@/lib/require-user';
 import { isValidSlot, isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseOccurrenceId } from '@/lib/recurrence';
 import type { Operation } from '@/lib/types';
 
-async function respond(today: string, batchId: string | null) {
-  return NextResponse.json({ batchId, week: await loadWeek(today) });
+async function respond(userId: string, today: string, batchId: string | null) {
+  return NextResponse.json({ batchId, week: await loadWeek(userId, today) });
 }
 
 /**
@@ -17,10 +18,15 @@ async function respond(today: string, batchId: string | null) {
  * по «удалить» или на устаревшей вкладке. Это не сбой сервера, а гонка,
  * поэтому отвечаем 409, а не 500.
  */
-async function applyOrConflict(text: string, operations: Operation[], today: string) {
+async function applyOrConflict(
+  userId: string,
+  text: string,
+  operations: Operation[],
+  today: string,
+) {
   try {
-    const { batchId } = await applyOperations(text, operations);
-    return respond(today, batchId);
+    const { batchId } = await applyOperations(userId, text, operations);
+    return respond(userId, today, batchId);
   } catch (error) {
     console.error('applyOperations failed', error);
     return NextResponse.json({ error: 'Задача изменилась или уже удалена' }, { status: 409 });
@@ -28,6 +34,9 @@ async function applyOrConflict(text: string, operations: Operation[], today: str
 }
 
 export async function POST(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     today: string;
     title: string;
@@ -52,10 +61,13 @@ export async function POST(request: Request) {
     durationMinutes: body.durationMinutes, allDay: body.allDay,
     categoryId: body.categoryId, recurrence: null,
   };
-  return applyOrConflict('создано вручную', [operation], body.today);
+  return applyOrConflict(user.userId, 'создано вручную', [operation], body.today);
 }
 
 export async function PATCH(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     today: string;
     taskId: string;
@@ -85,8 +97,14 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
-    await sql`update tasks set done = ${body.done}, updated_at = now() where id = ${body.taskId}`;
-    return respond(body.today, null);
+    // Чужая задача не находится и ответ тот же, что на уже удалённую: 200
+    // с текущей неделей. Отдельного «не твоё» нет намеренно — по нему
+    // перебором вычислялось бы, какие задачи есть у других.
+    await sql`
+      update tasks set done = ${body.done}, updated_at = now()
+      where id = ${body.taskId} and user_id = ${user.userId}
+    `;
+    return respond(user.userId, body.today, null);
   }
 
   // Название проверяем до ветки серии: иначе title "   " записался бы прямо
@@ -116,9 +134,12 @@ export async function PATCH(request: Request) {
     if (body.allDay != null) patch.all_day = body.allDay;
     if (body.categoryId !== undefined) patch.category_id = body.categoryId;
     if (Object.keys(patch).length > 0) {
-      await sql`update recurrences set ${sql(patch)} where id = ${occurrence.recurrenceId}`;
+      await sql`
+        update recurrences set ${sql(patch)}
+        where id = ${occurrence.recurrenceId} and user_id = ${user.userId}
+      `;
     }
-    return respond(body.today, null);
+    return respond(user.userId, body.today, null);
   }
 
   // Карточка задачи присылает все поля разом и просит полную замену
@@ -136,10 +157,13 @@ export async function PATCH(request: Request) {
     allDay: body.allDay ?? null,
     categoryId: body.categoryId ?? null,
   };
-  return applyOrConflict('изменено вручную', [operation], body.today);
+  return applyOrConflict(user.userId, 'изменено вручную', [operation], body.today);
 }
 
 export async function DELETE(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
   const body = await readJson<{
     today: string;
     taskId: string;
@@ -151,9 +175,16 @@ export async function DELETE(request: Request) {
 
   const occurrence = parseOccurrenceId(body.taskId);
   if (body.scope === 'series' && occurrence) {
-    await sql`delete from recurrences where id = ${occurrence.recurrenceId}`;
-    return respond(body.today, null);
+    // Без владельца это была бы худшая дыра из всех: удаление правила уносит
+    // каскадом и все материализованные по нему задачи чужого человека.
+    await sql`
+      delete from recurrences
+      where id = ${occurrence.recurrenceId} and user_id = ${user.userId}
+    `;
+    return respond(user.userId, body.today, null);
   }
 
-  return applyOrConflict('удалено вручную', [{ type: 'delete', taskId: body.taskId }], body.today);
+  return applyOrConflict(
+    user.userId, 'удалено вручную', [{ type: 'delete', taskId: body.taskId }], body.today,
+  );
 }

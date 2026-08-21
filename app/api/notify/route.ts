@@ -5,6 +5,7 @@ import {
   getSentKeys,
   getSettings,
   getSubscriptions,
+  getUsersWithSubscriptions,
   markSent,
   purgeOldSent,
   removeSubscription,
@@ -49,29 +50,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
   }
 
-  const [settings, timezone] = await Promise.all([getSettings(), getTimezone()]);
-  const { today, nowMinute } = nowInZone(timezone);
-
-  // Завтра нужно потому, что окно перешагивает полночь: задача в 00:05
-  // при напоминании за 15 минут требует отправки в 23:50 предыдущего дня.
-  const [tasks, alreadySent, subscriptions] = await Promise.all([
-    loadRange(today, addDays(today, 1)),
-    getSentKeys(),
-    getSubscriptions(),
-  ]);
-
-  const due = selectDue({
-    tasks,
-    today,
-    nowMinute,
-    beforeMinutes: settings.notifyBeforeMinutes,
-    alreadySent,
-  });
-
-  if (due.length === 0 || subscriptions.length === 0) {
-    await purgeOldSent();
-    return NextResponse.json({ sent: 0, due: due.length, subscriptions: subscriptions.length });
-  }
+  // Список берётся из подписок: слать некому тем, кто уведомления не включал.
+  const userIds = await getUsersWithSubscriptions();
 
   webpush.setVapidDetails(
     'mailto:yevhen.tuk@gmail.com',
@@ -79,43 +59,93 @@ export async function POST(request: Request) {
     process.env.VAPID_PRIVATE_KEY!,
   );
 
-  let sent = 0;
-  const delivered: string[] = [];
+  let sentTotal = 0;
+  let dueTotal = 0;
+  let subscriptionsTotal = 0;
 
-  for (const task of due) {
-    const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
-    let anyDelivered = false;
+  for (const userId of userIds) {
+    try {
+      const [settings, timezone] = await Promise.all([getSettings(userId), getTimezone(userId)]);
+      const { today, nowMinute } = nowInZone(timezone);
 
-    for (const subscription of subscriptions) {
-      try {
-        await webpush.sendNotification(
-          {
-            endpoint: subscription.endpoint,
-            keys: { p256dh: subscription.p256dh, auth: subscription.auth },
-          },
-          payload,
-        );
-        sent += 1;
-        anyDelivered = true;
-      } catch (error) {
-        const status = (error as { statusCode?: number }).statusCode;
-        // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
-        // копятся и каждый запуск тратит время на заведомо провальные запросы.
-        if (status === 404 || status === 410) {
-          await removeSubscription(subscription.endpoint);
-        } else {
-          console.error('Не удалось отправить уведомление', status, error);
+      // Завтра нужно потому, что окно перешагивает полночь: задача в 00:05
+      // при напоминании за 15 минут требует отправки в 23:50 предыдущего дня.
+      // getSentKeys и markSent — без владельца: их ключи (task.id либо
+      // occ:<правило>:<дата>) уникальны глобально, а не в рамках человека.
+      const [tasks, alreadySent, subscriptions] = await Promise.all([
+        loadRange(userId, today, addDays(today, 1)),
+        getSentKeys(),
+        getSubscriptions(userId),
+      ]);
+
+      const due = selectDue({
+        tasks,
+        today,
+        nowMinute,
+        beforeMinutes: settings.notifyBeforeMinutes,
+        alreadySent,
+      });
+      dueTotal += due.length;
+      subscriptionsTotal += subscriptions.length;
+
+      if (due.length === 0 || subscriptions.length === 0) continue;
+
+      const delivered: string[] = [];
+
+      for (const task of due) {
+        const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
+        let anyDelivered = false;
+
+        for (const subscription of subscriptions) {
+          try {
+            await webpush.sendNotification(
+              {
+                endpoint: subscription.endpoint,
+                keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+              },
+              payload,
+            );
+            sentTotal += 1;
+            anyDelivered = true;
+          } catch (error) {
+            const status = (error as { statusCode?: number }).statusCode;
+            // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
+            // копятся и каждый запуск тратит время на заведомо провальные запросы.
+            if (status === 404 || status === 410) {
+              await removeSubscription(userId, subscription.endpoint);
+            } else {
+              // Только код ответа: сам объект ошибки у web-push несёт endpoint
+              // подписки, а он адрес и есть — в лог ему хода нет (пункт 6).
+              console.error('Не удалось отправить уведомление', status);
+            }
+          }
         }
-      }
-    }
 
-    // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
-    // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
-    if (anyDelivered) delivered.push(task.id);
+        // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
+        // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
+        if (anyDelivered) delivered.push(task.id);
+      }
+
+      await markSent(delivered);
+    } catch {
+      // Сбой у одного не должен оставить остальных без уведомлений — поэтому
+      // try/catch внутри тела цикла, а не снаружи него. Отметку при сбое
+      // не ставим: markSent мог не успеть выполниться, а непопавшее в него
+      // напоминание безопаснее отправить повторно на следующем запуске, чем
+      // потерять навсегда. Само исключение в лог не идёт — в нём может
+      // оказаться адрес, id владельца или текст задачи (пункт 6 брифа).
+      console.error('notify: сбой у одного из владельцев');
+    }
   }
 
-  await markSent(delivered);
-  await purgeOldSent();
+  try {
+    // Уборка — не причина откатывать уже разосланное и отмеченное: падение
+    // purgeOldSent не должно превращать удачный прогон в 500 после того, как
+    // все владельцы обработаны.
+    await purgeOldSent();
+  } catch {
+    console.error('notify: не удалось убрать старые отметки об отправке');
+  }
 
-  return NextResponse.json({ sent, due: due.length, subscriptions: subscriptions.length });
+  return NextResponse.json({ sent: sentTotal, due: dueTotal, subscriptions: subscriptionsTotal });
 }
