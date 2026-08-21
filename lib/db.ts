@@ -52,7 +52,19 @@ export async function getTasksBetween(userId: string, from: string, to: string):
 }
 
 export async function getRecurrences(userId: string): Promise<Recurrence[]> {
-  const rows = await sql`select * from recurrences where user_id = ${userId}`;
+  // order by — не для тестов, а против дрожания экрана. loadRange сливает
+  // раскрытые вхождения с задачами и сортирует по (дате, «весь день», минуте
+  // начала); сортировка в JS устойчивая, поэтому равные по этой тройке
+  // вхождения сохраняют порядок правил — а он без order by физический,
+  // то есть меняется после любого переиспользования освобождённого места
+  // в куче. Два занятия на одно время менялись бы местами между двумя
+  // одинаковыми загрузками недели. id в хвосте — чтобы порядок был полным,
+  // а не «почти».
+  const rows = await sql`
+    select * from recurrences
+    where user_id = ${userId}
+    order by starts_on, start_minute nulls first, id
+  `;
   return rows.map(rowToRecurrence);
 }
 
