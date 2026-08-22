@@ -79,6 +79,9 @@ psql_exec <<'SQL'
 delete from "user" where id = 'seed';
 SQL
 
+echo "== Миграция 0005 =="
+psql_exec < "$MIGRATIONS_DIR/0005_user_keys.sql"
+
 tables=$(docker exec "$CONTAINER" psql -U "$PGUSER" -d "$DB" -tAc \
   "select count(*) from information_schema.tables where table_schema = 'public'")
 echo "== Готово: таблиц в public — $tables =="
