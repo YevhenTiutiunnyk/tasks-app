@@ -322,6 +322,18 @@ run('изоляция по владельцу', () => {
     expect(week.settings.aboutMe).toBe(SETTINGS_B.aboutMe);
   });
 
+  it('hasKey в неделе отражает ключ владельца, а не соседа', async () => {
+    // Ключи всем трём владельцам завели в конце beforeAll (Task 7).
+    expect((await loadWeek(idA, DATE)).hasKey).toBe(true);
+
+    await clearUserKey(idA);
+    expect((await loadWeek(idA, DATE)).hasKey).toBe(false);
+    // Сосед своего ключа не терял — иначе hasKey читал бы не того владельца.
+    expect((await loadWeek(idB, DATE)).hasKey).toBe(true);
+
+    await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+  });
+
   it('без своей строки настройки — умолчания, а не чужие', async () => {
     // Строка есть у B и заметно отличается от умолчаний. Потеряй getSettings
     // фильтр — сюда пришли бы значения B, а не эти.

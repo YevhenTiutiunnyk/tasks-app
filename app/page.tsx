@@ -1,6 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { ClarifyDialog, type ClarifyItem } from '@/components/ClarifyDialog';
 import { CommandBar, type CommandResponse } from '@/components/CommandBar';
@@ -17,6 +18,7 @@ interface WeekData {
   to: string;
   tasks: Task[];
   settings: Settings;
+  hasKey: boolean;
 }
 
 function todayIso(): string {
@@ -273,7 +275,16 @@ export default function Home() {
           {actionError}
         </button>
       )}
-      <CommandBar today={todayIso()} onResult={handleResult} />
+      {week.hasKey ? (
+        <CommandBar today={todayIso()} onResult={handleResult} />
+      ) : (
+        <div className="rounded-lg border border-dashed p-4 text-sm text-muted">
+          Нужен свой ключ Anthropic, чтобы надиктовывать задачи.{' '}
+          <Link href="/settings" className="underline">
+            Завести в настройках
+          </Link>
+        </div>
+      )}
     </main>
   );
 }
