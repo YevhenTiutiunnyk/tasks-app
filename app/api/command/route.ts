@@ -47,8 +47,7 @@ export async function POST(request: Request) {
 
   let parsed;
   try {
-    parsed = await parseCommand({
-      client: key.client,
+    parsed = await parseCommand(key.client, {
       text,
       today,
       timezone: timezone ?? 'UTC',

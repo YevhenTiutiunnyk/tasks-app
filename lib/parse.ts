@@ -5,12 +5,6 @@ import { ParseResultSchema } from './schema';
 import type { ParseResult, Settings, Task } from './types';
 
 export interface ParseInput {
-  /**
-   * Клиент приходит готовым, с ключом того, кто спрашивает. Разбор намеренно
-   * не знает, что такое ключ: строка ключа не должна ездить в объекте, который
-   * при отладке естественно захочется распечатать целиком.
-   */
-  client: Anthropic;
   text: string;
   today: string;               // 'YYYY-MM-DD'
   timezone: string;            // например 'Europe/Kyiv'
@@ -58,8 +52,13 @@ function buildSystemPrompt(input: ParseInput): string {
   ].filter(Boolean).join('\n');
 }
 
-export async function parseCommand(input: ParseInput): Promise<ParseResult> {
-  const response = await input.client.messages.parse({
+/**
+ * Клиент приходит готовым, с ключом того, кто спрашивает, отдельным первым
+ * аргументом — не полем в `input`. Строка ключа не должна ездить в объекте,
+ * который при отладке естественно захочется распечатать целиком.
+ */
+export async function parseCommand(client: Anthropic, input: ParseInput): Promise<ParseResult> {
+  const response = await client.messages.parse({
     model: 'claude-opus-5',
     max_tokens: 16000,
     system: buildSystemPrompt(input),

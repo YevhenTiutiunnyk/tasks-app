@@ -29,8 +29,8 @@ const tasks: Task[] = [
 
 // Ключ для примеров берётся из окружения (.env.local): это стенд качества
 // разбора, а не приложение. У приложения ключ приходит из базы, от вошедшего.
+const client = new Anthropic();
 const base = {
-  client: new Anthropic(),
   today: '2026-08-04',
   timezone: 'Europe/Kyiv',
   tasks,
@@ -39,7 +39,7 @@ const base = {
 
 run('parseCommand', () => {
   it('создаёт задачу с явным временем', async () => {
-    const result = await parseCommand({ ...base, text: 'в четверг в 15 забрать посылку' });
+    const result = await parseCommand(client, { ...base, text: 'в четверг в 15 забрать посылку' });
     expect(result.operations).toHaveLength(1);
     const op = result.operations[0];
     expect(op.type).toBe('create');
@@ -51,7 +51,7 @@ run('parseCommand', () => {
   }, 120_000);
 
   it('переносит существующую задачу по её id', async () => {
-    const result = await parseCommand({ ...base, text: 'перенеси врача на пятницу' });
+    const result = await parseCommand(client, { ...base, text: 'перенеси врача на пятницу' });
     const op = result.operations[0];
     expect(op.type).toBe('update');
     if (op.type === 'update') {
@@ -61,12 +61,12 @@ run('parseCommand', () => {
   }, 120_000);
 
   it('удаляет существующую задачу', async () => {
-    const result = await parseCommand({ ...base, text: 'убери врача из расписания' });
+    const result = await parseCommand(client, { ...base, text: 'убери врача из расписания' });
     expect(result.operations).toEqual([{ type: 'delete', taskId: DOCTOR_ID }]);
   }, 120_000);
 
   it('заводит правило повтора', async () => {
-    const result = await parseCommand({ ...base, text: 'каждый вторник в 8 утра спортзал' });
+    const result = await parseCommand(client, { ...base, text: 'каждый вторник в 8 утра спортзал' });
     const op = result.operations[0];
     expect(op.type).toBe('create');
     if (op.type === 'create') {
@@ -77,7 +77,7 @@ run('parseCommand', () => {
   }, 120_000);
 
   it('спрашивает время у обеих задач без времени', async () => {
-    const result = await parseCommand({
+    const result = await parseCommand(client, {
       ...base,
       text: 'надо сходить в спортзал и доделать отчёт',
     });
@@ -86,7 +86,7 @@ run('parseCommand', () => {
   }, 120_000);
 
   it('размытое время трактует сам и не спрашивает', async () => {
-    const result = await parseCommand({ ...base, text: 'поставь созвон завтра утром' });
+    const result = await parseCommand(client, { ...base, text: 'поставь созвон завтра утром' });
     const op = result.operations[0];
     expect(op.type).toBe('create');
     if (op.type === 'create') {
@@ -97,7 +97,7 @@ run('parseCommand', () => {
   }, 120_000);
 
   it('не выдумывает задачу, которой нет', async () => {
-    const result = await parseCommand({ ...base, text: 'перенеси совещание с бухгалтером на среду' });
+    const result = await parseCommand(client, { ...base, text: 'перенеси совещание с бухгалтером на среду' });
     expect(result.operations).toEqual([]);
     expect(result.reply.length).toBeGreaterThan(0);
   }, 120_000);
