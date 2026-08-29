@@ -323,15 +323,20 @@ run('изоляция по владельцу', () => {
   });
 
   it('hasKey в неделе отражает ключ владельца, а не соседа', async () => {
-    // Ключи всем трём владельцам завели в конце beforeAll (Task 7).
-    expect((await loadWeek(idA, DATE)).hasKey).toBe(true);
+    // Восстановление — в finally: упади любой expect, idA остался бы без
+    // ключа до конца прогона файла, и последующие тесты упали бы вторично,
+    // маскируя первопричину каскадом.
+    try {
+      // Ключи всем трём владельцам завели в конце beforeAll (Task 7).
+      expect((await loadWeek(idA, DATE)).hasKey).toBe(true);
 
-    await clearUserKey(idA);
-    expect((await loadWeek(idA, DATE)).hasKey).toBe(false);
-    // Сосед своего ключа не терял — иначе hasKey читал бы не того владельца.
-    expect((await loadWeek(idB, DATE)).hasKey).toBe(true);
-
-    await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+      await clearUserKey(idA);
+      expect((await loadWeek(idA, DATE)).hasKey).toBe(false);
+      // Сосед своего ключа не терял — иначе hasKey читал бы не того владельца.
+      expect((await loadWeek(idB, DATE)).hasKey).toBe(true);
+    } finally {
+      await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+    }
   });
 
   it('без своей строки настройки — умолчания, а не чужие', async () => {
@@ -736,16 +741,22 @@ run('изоляция по владельцу', () => {
     it('без ключа роут команды отказывает до обращения к модели', async () => {
       session.userId = idA;
       await clearUserKey(idA);
-      const response = await commandPost(
-        new Request('http://localhost/api/command', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ text: 'ZZ-купить хлеб', today: DATE, timezone: 'Europe/Kyiv' }),
-        }),
-      );
-      expect(response.status).toBe(409);
-      expect((await response.json()).code).toBe('no_key');
-      await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+      // Восстановление — в finally: упади любой expect, idA остался бы без
+      // ключа до конца прогона файла, и последующие тесты упали бы вторично,
+      // маскируя первопричину каскадом.
+      try {
+        const response = await commandPost(
+          new Request('http://localhost/api/command', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'ZZ-купить хлеб', today: DATE, timezone: 'Europe/Kyiv' }),
+          }),
+        );
+        expect(response.status).toBe(409);
+        expect((await response.json()).code).toBe('no_key');
+      } finally {
+        await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+      }
     });
 
     it('свежая чужая пачка не мешает отменить свою', async () => {
