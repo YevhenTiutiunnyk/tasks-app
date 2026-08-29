@@ -9,13 +9,14 @@ import {
   getSubscriptions,
   getTasksBetween,
   getTimezone,
+  getUserKey,
   getUsersWithSubscriptions,
   removeSubscription,
   saveSettings,
   saveTimezone,
   saveUserKey,
 } from './db';
-import { encryptApiKey } from './user-key';
+import { decryptApiKey, encryptApiKey } from './user-key';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import { loadRange, loadWeek } from './week';
 import { applyOperations, undoBatch } from './apply';
@@ -33,10 +34,25 @@ vi.mock('./require-user', () => ({
 
 // Разбор уточнения ходит в модель. Здесь важно не что он ответит, а был ли
 // он вызван вообще: по чужой задаче до него дойти не должно.
-const clarify = vi.hoisted(() => ({ calls: 0 }));
+//
+// queue — очередь заготовленных исходов, по одному на вызов: 'ok' (или
+// пусто, когда очередь исчерпана) — обычный успешный разбор; {} — бросок без
+// status (беда одного ответа); {status} — бросок с status (ошибка самого
+// Anthropic, общая для всех ответов). Нужна только тесту про Minor 3 ниже —
+// остальные тесты очередь не трогают, и для них поведение не изменилось.
+const clarify = vi.hoisted(() => ({
+  calls: 0,
+  queue: [] as Array<'ok' | { status?: number }>,
+}));
 vi.mock('./parse-clarify', () => ({
   parseClarification: async () => {
     clarify.calls += 1;
+    const next = clarify.queue.shift();
+    if (next && next !== 'ok') {
+      const error = new Error('ZZ-имитация сбоя разбора') as Error & { status?: number };
+      if (next.status !== undefined) error.status = next.status;
+      throw error;
+    }
     return { date: '2030-03-04', startMinute: 600, durationMinutes: 60 };
   },
 }));
@@ -336,6 +352,29 @@ run('изоляция по владельцу', () => {
       expect((await loadWeek(idB, DATE)).hasKey).toBe(true);
     } finally {
       await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+    }
+  });
+
+  it('getUserKey не читает чужую строку, saveUserKey не затирает чужую', async () => {
+    // Восстановление — в finally, как в соседнем тесте про hasKey.
+    try {
+      await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-A'));
+      await saveUserKey(idB, encryptApiKey(idB, 'sk-ant-zz-ключ-B'));
+
+      const rowA = await getUserKey(idA);
+      const rowB = await getUserKey(idB);
+
+      // getUserKey(idA) обязан расшифровываться ключом A: читай он строку
+      // соседа, AAD-проверка decryptApiKey(idA, ...) на шифротексте B
+      // провалилась бы и вернула null, а не совпадение с ключом B.
+      expect(rowA?.sealed && decryptApiKey(idA, rowA.sealed)).toBe('sk-ant-zz-ключ-A');
+      expect(rowB?.sealed && decryptApiKey(idB, rowB.sealed)).toBe('sk-ant-zz-ключ-B');
+
+      // saveUserKey(idA, ...) не затёрло строку B — она всё ещё ключ B.
+      expect(rowB?.sealed && decryptApiKey(idB, rowB.sealed)).not.toBe('sk-ant-zz-ключ-A');
+    } finally {
+      await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+      await saveUserKey(idB, encryptApiKey(idB, 'sk-ant-zz-ключ-для-теста-владельцев'));
     }
   });
 
@@ -736,6 +775,60 @@ run('изоляция по владельцу', () => {
       expect(clarify.calls).toBe(1);
       const [after] = await sql`select start_minute from tasks where id = ${task.id}`;
       expect(after.start_minute).toBe(600);
+    });
+
+    it('ошибка Anthropic (со status) обрывает цикл уточнений, ошибка без status — нет', async () => {
+      // Minor 3 финального ревью: catch раньше на любой бросок отвечал 502
+      // и терял уже применённые ответы. Проверяем обе ветки на паре ответов,
+      // где первый бросает, а второй должен либо не потрогаться (status
+      // есть — ошибка Anthropic одна на все ответы, продолжать бессмысленно),
+      // либо всё равно примениться (status нет — беда одного ответа).
+      session.userId = idA;
+      const [first, second] = await sql`
+        insert into tasks (title, date, all_day, user_id)
+        values ('ZZ-уточнение 1', ${DATE}, true, ${idA}), ('ZZ-уточнение 2', ${DATE}, true, ${idA})
+        returning id
+      `;
+      try {
+        clarify.calls = 0;
+        clarify.queue = [{ status: 401 }];
+        const aborted = await clarifyPost(
+          request('http://t/api/clarify', 'POST', {
+            today: DATE,
+            answers: [
+              { taskId: first.id, text: 'ZZ-в десять' },
+              { taskId: second.id, text: 'ZZ-в одиннадцать' },
+            ],
+          }),
+        );
+        expect(aborted.status).toBe(502);
+        // Второй ответ даже не пробовался.
+        expect(clarify.calls).toBe(1);
+        const [untouched] = await sql`select start_minute from tasks where id = ${second.id}`;
+        expect(untouched.start_minute).toBeNull();
+
+        clarify.calls = 0;
+        clarify.queue = [{}];
+        const continued = await clarifyPost(
+          request('http://t/api/clarify', 'POST', {
+            today: DATE,
+            answers: [
+              { taskId: first.id, text: 'ZZ-в десять' },
+              { taskId: second.id, text: 'ZZ-в одиннадцать' },
+            ],
+          }),
+        );
+        expect(continued.status).toBe(200);
+        expect(await continued.json()).toMatchObject({ failed: [first.id] });
+        // Оба ответа пробовались: первый упал без status и попал в failed,
+        // второй как ни в чём не бывало применился.
+        expect(clarify.calls).toBe(2);
+        const [applied] = await sql`select start_minute from tasks where id = ${second.id}`;
+        expect(applied.start_minute).toBe(600);
+      } finally {
+        clarify.queue = [];
+        await sql`delete from tasks where id in (${first.id}, ${second.id})`;
+      }
     });
 
     it('без ключа роут команды отказывает до обращения к модели', async () => {

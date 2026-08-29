@@ -48,10 +48,19 @@ export async function POST(request: Request) {
       // 'YYYY-MM-DD'. Без toIsoDate уточнение молча не срабатывало бы.
       slot = await parseClarification(key.client, answer.text, toIsoDate(row.date), today);
     } catch (error) {
-      // Ошибка ключа одинакова для всех ответов — продолжать цикл незачем,
-      // и молчать про причину тоже: раньше она пропадала целиком.
-      console.error('parseClarification failed', error);
-      return anthropicFailure(error);
+      // Обрываем цикл, только если у ошибки есть status — это ошибка самого
+      // Anthropic (ключ отозван, нет средств, лимит), она одинакова для всех
+      // ответов, и продолжать бессмысленно. Уже применённые до неё ответы
+      // остаются в базе. Любая другая ошибка (например невалидная по схеме
+      // выдача модели) — беда одного конкретного ответа: остальные всё ещё
+      // стоит попробовать.
+      const status = (error as { status?: number } | null)?.status;
+      if (status !== undefined) {
+        console.error('parseClarification failed', error);
+        return anthropicFailure(error);
+      }
+      failed.push(answer.taskId);
+      continue;
     }
     if (slot === null) {
       failed.push(answer.taskId);

@@ -58,7 +58,7 @@ export function clientForUser(
  * соврать.
  */
 export function anthropicFailure(error: unknown): NextResponse {
-  const status = (error as { status?: number }).status;
+  const status = (error as { status?: number } | null)?.status;
   const message =
     status === 401
       ? 'Твой ключ больше не принимается Anthropic. Проверь его в настройках.'
