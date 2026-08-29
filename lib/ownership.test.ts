@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from './db';
 import {
   addSubscription,
+  clearUserKey,
   getExceptions,
   getRecurrences,
   getSettings,
@@ -12,7 +13,9 @@ import {
   removeSubscription,
   saveSettings,
   saveTimezone,
+  saveUserKey,
 } from './db';
+import { encryptApiKey } from './user-key';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import { loadRange, loadWeek } from './week';
 import { applyOperations, undoBatch } from './apply';
@@ -91,6 +94,7 @@ vi.mock('./notify', async (importOriginal) => {
 // раньше, чем модуль роута потянет за собой настоящий require-user.
 import { PATCH as taskPatch, DELETE as taskDelete } from '@/app/api/task/route';
 import { POST as clarifyPost } from '@/app/api/clarify/route';
+import { POST as commandPost } from '@/app/api/command/route';
 import { POST as undoPost } from '@/app/api/undo/route';
 import { POST as pushPost, DELETE as pushDelete } from '@/app/api/push/route';
 import { POST as notifyPost } from '@/app/api/notify/route';
@@ -261,9 +265,17 @@ run('изоляция по владельцу', () => {
 
     // Строка настроек есть только у B: A остаётся «новым человеком».
     await saveSettings(idB, SETTINGS_B);
+
+    // Роут уточнения теперь требует ключ владельца. Ключ ненастоящий: разбор
+    // подменён vi.mock, до Anthropic дело не доходит.
+    for (const id of [idA, idB, idC]) {
+      await saveUserKey(id, encryptApiKey(id, 'sk-ant-zz-ключ-для-теста-владельцев'));
+    }
   });
 
   afterAll(async () => {
+    // До удаления пользователей: внешний ключ иначе не даст.
+    await sql`delete from user_api_keys where user_id in (${idA}, ${idB}, ${idC})`;
     // Только свои строки. delete без условий здесь стоил бы владельцу расписания.
     await clean();
     await sql.end();
@@ -707,6 +719,21 @@ run('изоляция по владельцу', () => {
       expect(clarify.calls).toBe(1);
       const [after] = await sql`select start_minute from tasks where id = ${task.id}`;
       expect(after.start_minute).toBe(600);
+    });
+
+    it('без ключа роут команды отказывает до обращения к модели', async () => {
+      session.userId = idA;
+      await clearUserKey(idA);
+      const response = await commandPost(
+        new Request('http://localhost/api/command', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text: 'ZZ-купить хлеб', today: DATE, timezone: 'Europe/Kyiv' }),
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect((await response.json()).code).toBe('no_key');
+      await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
     });
 
     it('свежая чужая пачка не мешает отменить свою', async () => {

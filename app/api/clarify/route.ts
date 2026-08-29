@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { isValidIsoDate } from '@/lib/dates';
-import { sql, toIsoDate } from '@/lib/db';
+import { getUserKey, sql, toIsoDate } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
 import { isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseClarification } from '@/lib/parse-clarify';
+import { anthropicFailure, clientForUser } from '@/lib/key-client';
 
 export async function POST(request: Request) {
   const user = await requireUser(request);
@@ -26,6 +27,10 @@ export async function POST(request: Request) {
     return badRequest('Некорректный ответ на уточнение');
   }
 
+  // Клиент создаётся один раз до цикла, а не на каждый ответ.
+  const key = clientForUser(user.userId, await getUserKey(user.userId));
+  if (key.response) return key.response;
+
   const failed: string[] = [];
 
   for (const answer of answers) {
@@ -41,10 +46,12 @@ export async function POST(request: Request) {
     try {
       // Драйвер отдаёт колонку date объектом Date, а разбор ждёт строку
       // 'YYYY-MM-DD'. Без toIsoDate уточнение молча не срабатывало бы.
-      slot = await parseClarification(answer.text, toIsoDate(row.date), today);
-    } catch {
-      failed.push(answer.taskId);
-      continue;
+      slot = await parseClarification(key.client, answer.text, toIsoDate(row.date), today);
+    } catch (error) {
+      // Ошибка ключа одинакова для всех ответов — продолжать цикл незачем,
+      // и молчать про причину тоже: раньше она пропадала целиком.
+      console.error('parseClarification failed', error);
+      return anthropicFailure(error);
     }
     if (slot === null) {
       failed.push(answer.taskId);

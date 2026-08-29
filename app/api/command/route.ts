@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { addDays, isValidIsoDate, weekRange } from '@/lib/dates';
-import { getSettings, saveTimezone } from '@/lib/db';
+import { getSettings, getUserKey, saveTimezone } from '@/lib/db';
 import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
 import { loadRange, loadWeek } from '@/lib/week';
 import { parseCommand } from '@/lib/parse';
+import { anthropicFailure, clientForUser } from '@/lib/key-client';
 import { validateParseResult } from '@/lib/validate';
 import { applyOperations } from '@/lib/apply';
 
@@ -33,15 +34,21 @@ export async function POST(request: Request) {
   const zone = timezone ? normalizeTimezone(timezone) : null;
   const saveZone = zone ? saveTimezone(user.userId, zone) : Promise.resolve();
 
-  const [contextTasks, settings] = await Promise.all([
+  // Ключ достаём в той же Promise.all — лишнего обращения к базе не появляется.
+  const [contextTasks, settings, keyRow] = await Promise.all([
     loadRange(user.userId, contextFrom, contextTo),
     getSettings(user.userId),
+    getUserKey(user.userId),
     saveZone,
   ]);
+
+  const key = clientForUser(user.userId, keyRow);
+  if (key.response) return key.response;
 
   let parsed;
   try {
     parsed = await parseCommand({
+      client: key.client,
       text,
       today,
       timezone: timezone ?? 'UTC',
@@ -50,10 +57,7 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error('parseCommand failed', error);
-    return NextResponse.json(
-      { error: 'Не получилось разобрать фразу. Попробуй сформулировать иначе.' },
-      { status: 502 },
-    );
+    return anthropicFailure(error);
   }
 
   const checked = validateParseResult(parsed, { tasks: contextTasks, categories: settings.categories });

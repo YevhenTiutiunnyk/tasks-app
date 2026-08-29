@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import Anthropic from '@anthropic-ai/sdk';
 import { parseCommand } from './parse';
 import type { Settings, Task } from './types';
 
@@ -26,7 +27,15 @@ const tasks: Task[] = [
   },
 ];
 
-const base = { today: '2026-08-04', timezone: 'Europe/Kyiv', tasks, settings };
+// Ключ для примеров берётся из окружения (.env.local): это стенд качества
+// разбора, а не приложение. У приложения ключ приходит из базы, от вошедшего.
+const base = {
+  client: new Anthropic(),
+  today: '2026-08-04',
+  timezone: 'Europe/Kyiv',
+  tasks,
+  settings,
+};
 
 run('parseCommand', () => {
   it('создаёт задачу с явным временем', async () => {

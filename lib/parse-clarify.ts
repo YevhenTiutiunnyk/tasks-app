@@ -1,5 +1,5 @@
 import 'server-only';
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { isValidIsoDate } from './dates';
@@ -10,8 +10,6 @@ const SlotSchema = z.object({
   durationMinutes: z.number().int().nullable(),
 });
 
-const client = new Anthropic();
-
 export interface Slot {
   date: string;
   startMinute: number;
@@ -20,6 +18,7 @@ export interface Slot {
 
 /** Возвращает конкретный слот или null, если фразу разобрать не удалось. */
 export async function parseClarification(
+  client: Anthropic,
   text: string,
   currentDate: string,
   today: string,

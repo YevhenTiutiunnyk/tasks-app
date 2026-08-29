@@ -1,18 +1,22 @@
 import 'server-only';
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { ParseResultSchema } from './schema';
 import type { ParseResult, Settings, Task } from './types';
 
 export interface ParseInput {
+  /**
+   * Клиент приходит готовым, с ключом того, кто спрашивает. Разбор намеренно
+   * не знает, что такое ключ: строка ключа не должна ездить в объекте, который
+   * при отладке естественно захочется распечатать целиком.
+   */
+  client: Anthropic;
   text: string;
   today: string;               // 'YYYY-MM-DD'
   timezone: string;            // например 'Europe/Kyiv'
   tasks: Task[];               // задачи трёх недель: текущая и соседние
   settings: Settings;
 }
-
-const client = new Anthropic();
 
 function minutesToClock(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
@@ -55,7 +59,7 @@ function buildSystemPrompt(input: ParseInput): string {
 }
 
 export async function parseCommand(input: ParseInput): Promise<ParseResult> {
-  const response = await client.messages.parse({
+  const response = await input.client.messages.parse({
     model: 'claude-opus-5',
     max_tokens: 16000,
     system: buildSystemPrompt(input),
