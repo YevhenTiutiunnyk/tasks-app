@@ -21,6 +21,15 @@ export default function SettingsPage() {
   // Ключ для PushToggle: меняется после попытки снять подписку при выходе —
   // см. finally в signOut, там же и зачем.
   const [pushEpoch, setPushEpoch] = useState(0);
+  const [keyState, setKeyState] = useState<{
+    present: boolean;
+    keySetAt: string | null;
+    lockedUntil: string | null;
+  } | null>(null);
+  const [keyInput, setKeyInput] = useState('');
+  const [keyEditing, setKeyEditing] = useState(false);
+  const [keyStatus, setKeyStatus] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +53,28 @@ export default function SettingsPage() {
         setEnd(minutesToClock(loaded.workEndMinute));
       } catch {
         if (!cancelled) setLoadError('Нет связи с сервером');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [router]);
+
+  // Отдельно от загрузки настроек: у /api/key свой роут и свои отказы,
+  // смешивать с /api/settings нельзя.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/key');
+        if (response.status === 401) {
+          router.push('/login');
+          return;
+        }
+        if (!response.ok) return;
+        const loaded = await response.json();
+        if (!cancelled) setKeyState(loaded);
+      } catch {
+        // Молча: экран настроек уже показывает свою ошибку связи, вторая
+        // плашка про то же самое только запутает.
       }
     })();
     return () => { cancelled = true; };
@@ -78,6 +109,64 @@ export default function SettingsPage() {
       setStatus('Нет связи с сервером');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveKey() {
+    if (keyBusy) return;
+    setKeyBusy(true);
+    setKeyStatus('');
+    try {
+      const response = await fetch('/api/key', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key: keyInput }),
+      });
+      if (response.status === 401) {
+        router.push('/login');
+        return;
+      }
+      const body = await response.json();
+      if (response.ok) {
+        // Введённый ключ из памяти страницы убираем сразу же.
+        setKeyInput('');
+        setKeyEditing(false);
+        setKeyStatus('Ключ сохранён');
+        setKeyState({ present: true, keySetAt: new Date().toISOString(), lockedUntil: null });
+      } else {
+        // Бэкенд сообщает — экран показывает. Причина приходит в body.error.
+        setKeyStatus(body.error ?? 'Не получилось');
+        if (body.lockedUntil) {
+          setKeyState((prev) => (prev ? { ...prev, lockedUntil: body.lockedUntil } : prev));
+        }
+      }
+    } catch {
+      setKeyStatus('Нет связи с сервером');
+    } finally {
+      setKeyBusy(false);
+    }
+  }
+
+  async function removeKey() {
+    if (keyBusy) return;
+    setKeyBusy(true);
+    setKeyStatus('');
+    try {
+      const response = await fetch('/api/key', { method: 'DELETE' });
+      if (response.status === 401) {
+        router.push('/login');
+        return;
+      }
+      if (response.ok) {
+        setKeyState({ present: false, keySetAt: null, lockedUntil: null });
+        setKeyStatus('Ключ убран');
+      } else {
+        setKeyStatus('Не получилось убрать ключ');
+      }
+    } catch {
+      setKeyStatus('Нет связи с сервером');
+    } finally {
+      setKeyBusy(false);
     }
   }
 
@@ -324,6 +413,69 @@ export default function SettingsPage() {
         >
           + добавить категорию
         </button>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium">Ключ Anthropic</h2>
+
+        {keyState?.present && !keyEditing ? (
+          <div className="space-y-2 text-sm">
+            <p className="text-xs text-muted">
+              Ключ заведён{' '}
+              {keyState.keySetAt
+                ? new Date(keyState.keySetAt).toLocaleDateString('ru-RU', {
+                    day: 'numeric',
+                    month: 'long',
+                  })
+                : ''}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setKeyEditing(true)}
+                className="rounded-md border border-hairline bg-surface px-3 py-1.5 text-xs disabled:opacity-50"
+              >
+                Заменить
+              </button>
+              <button
+                type="button"
+                onClick={() => void removeKey()}
+                disabled={keyBusy}
+                className="rounded-md border border-hairline bg-surface px-3 py-1.5 text-xs disabled:opacity-50"
+              >
+                Убрать
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2 text-sm">
+            <ol className="list-decimal space-y-1 pl-5 text-xs text-muted">
+              <li>Открой console.anthropic.com, раздел API keys.</li>
+              <li>Создай ключ и сразу скопируй — Anthropic показывает его один раз.</li>
+              <li>Положи на счёт денег, иначе ключ не заработает.</li>
+              <li>Вставь ключ сюда.</li>
+            </ol>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={keyInput}
+              onChange={(event) => setKeyInput(event.target.value)}
+              placeholder="sk-ant-..."
+              className="w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => void saveKey()}
+              disabled={keyBusy || !keyInput}
+              className="rounded-md bg-ink px-4 py-2 text-sm text-paper disabled:opacity-50"
+            >
+              {keyBusy ? '…' : 'Сохранить'}
+            </button>
+          </div>
+        )}
+
+        {keyStatus && <p className="text-xs text-muted">{keyStatus}</p>}
       </section>
 
       <div className="flex items-center gap-3 border-t border-hairline pt-4">
