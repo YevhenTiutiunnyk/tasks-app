@@ -165,4 +165,4 @@ function describeConnection(
 // Ключ шифрования для тестов. Значение постоянное и заведомо не боевое:
 // строки user_api_keys в тестовом контейнере одноразовые, а настоящий ключ
 // в тестах не нужен и не должен там оказаться. 32 байта в base64.
-process.env.KEY_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
+process.env.KEY_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
