@@ -418,7 +418,9 @@ export default function SettingsPage() {
       <section className="space-y-2">
         <h2 className="text-sm font-medium">Ключ Anthropic</h2>
 
-        {keyState?.present && !keyEditing ? (
+        {keyState === null ? (
+          <p className="text-xs text-muted">Загружаю…</p>
+        ) : keyState.present && !keyEditing ? (
           <div className="space-y-2 text-sm">
             <p className="text-xs text-muted">
               Ключ заведён{' '}
@@ -464,18 +466,43 @@ export default function SettingsPage() {
               placeholder="sk-ant-..."
               className="w-full rounded-md border border-hairline bg-surface px-2 py-1.5 text-sm"
             />
-            <button
-              type="button"
-              onClick={() => void saveKey()}
-              disabled={keyBusy || !keyInput}
-              className="rounded-md bg-ink px-4 py-2 text-sm text-paper disabled:opacity-50"
-            >
-              {keyBusy ? '…' : 'Сохранить'}
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void saveKey()}
+                disabled={keyBusy || !keyInput}
+                className="rounded-md bg-ink px-4 py-2 text-sm text-paper disabled:opacity-50"
+              >
+                {keyBusy ? '…' : 'Сохранить'}
+              </button>
+              {keyState.present && keyEditing && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeyEditing(false);
+                    setKeyInput('');
+                  }}
+                  className="rounded-md border border-hairline bg-surface px-4 py-2 text-sm disabled:opacity-50"
+                >
+                  Отмена
+                </button>
+              )}
+            </div>
           </div>
         )}
 
         {keyStatus && <p className="text-xs text-muted">{keyStatus}</p>}
+        {keyState?.lockedUntil && new Date(keyState.lockedUntil) > new Date() && (
+          <p className="text-xs text-muted">
+            Можно будет попробовать снова:{' '}
+            {new Date(keyState.lockedUntil).toLocaleString('ru-RU', {
+              day: 'numeric',
+              month: 'long',
+              hour: '2-digit',
+              minute: '2-digit',
+            })}
+          </p>
+        )}
       </section>
 
       <div className="flex items-center gap-3 border-t border-hairline pt-4">
