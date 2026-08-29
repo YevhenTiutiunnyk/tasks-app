@@ -28,7 +28,11 @@ export function clientForUser(
 
   const apiKey = decryptApiKey(userId, row.sealed);
   if (apiKey === null) {
-    // Штатный путь при потере или смене KEY_ENCRYPTION_KEY.
+    // null здесь значит: сменился KEY_ENCRYPTION_KEY или побились байты
+    // шифротекста. Отсутствующая или неверной длины переменная окружения
+    // сюда не доходит — decryptApiKey бросает ниже, до этой развилки,
+    // и намеренно не ловится: это авария развёртывания, а не состояние
+    // конкретного ключа. См. lib/user-key.ts и lib/user-key.test.ts.
     return {
       response: NextResponse.json(
         { error: 'Ключ больше не читается, введи его заново', code: 'key_unreadable' },

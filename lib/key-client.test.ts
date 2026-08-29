@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { anthropicFailure, clientForUser } from './key-client';
 import { encryptApiKey } from './user-key';
 import type { UserKeyRow } from './db';
@@ -34,8 +34,11 @@ describe('clientForUser', () => {
   });
 
   it('ключ не расшифровался — 409 key_unreadable', async () => {
-    // Ровно то, что происходит при потере KEY_ENCRYPTION_KEY: шифротекст
-    // чужой по владельцу расшифроваться не может.
+    // Шифротекст запечатан на другого владельца (AAD = 'zz-кто-то-другой'):
+    // AEAD отказывается расшифровывать чужую строку, decryptApiKey возвращает
+    // null — то же самое происходит при смене KEY_ENCRYPTION_KEY или порче
+    // байтов. Отсутствие переменной окружения — отдельный, не этот случай:
+    // он бросает уровнем ниже, см. следующий describe.
     const result = clientForUser(USER, rowWithKey('zz-кто-то-другой', 'sk-ant-zz-ключ'));
     expect(result.response?.status).toBe(409);
     expect((await result.response!.json()).code).toBe('key_unreadable');
@@ -45,6 +48,21 @@ describe('clientForUser', () => {
     const result = clientForUser(USER, rowWithKey(USER, 'sk-ant-zz-рабочий-ключ'));
     expect(result.response).toBeUndefined();
     expect(result.client).toBeDefined();
+  });
+
+  it('отсутствующая KEY_ENCRYPTION_KEY — авария, а не 409 всем подряд', () => {
+    // Шифруем ДО подмены переменной: само шифрование тоже её требует и
+    // упало бы раньше времени.
+    const row = rowWithKey(USER, 'sk-ant-zz-рабочий-ключ');
+
+    // Главный предохранитель задачи: clientForUser не смеет обернуть
+    // decryptApiKey в try/catch и превратить забытую переменную окружения
+    // в тихий 409 «введи ключ заново» для всех пользователей разом. Это
+    // авария развёртывания — она обязана бросить и уронить запрос, а не
+    // притвориться обычным «ключ не читается».
+    vi.stubEnv('KEY_ENCRYPTION_KEY', '');
+    expect(() => clientForUser(USER, row)).toThrow(/KEY_ENCRYPTION_KEY/);
+    vi.unstubAllEnvs();
   });
 });
 
