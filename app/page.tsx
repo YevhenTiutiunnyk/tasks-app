@@ -278,11 +278,17 @@ export default function Home() {
       {week.hasKey ? (
         <CommandBar today={todayIso()} onResult={handleResult} />
       ) : (
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted">
-          Нужен свой ключ Anthropic, чтобы надиктовывать задачи.{' '}
-          <Link href="/settings" className="underline">
-            Завести в настройках
-          </Link>
+        // Та же внешняя обёртка, что у CommandBar (fixed inset-x-0 bottom-0):
+        // плашка занимает его место, а не встаёт в поток — иначе на
+        // заполненной неделе она уходит ниже сгиба, а pb-28 у <main>,
+        // зарезервированный под исчезнувшую строку ввода, остаётся пустотой.
+        <div className="fixed inset-x-0 bottom-0 border-t border-hairline bg-paper/85 p-4 backdrop-blur">
+          <p className="mx-auto max-w-3xl text-[15px] text-muted">
+            Нужен свой ключ Anthropic, чтобы надиктовывать задачи.{' '}
+            <Link href="/settings" className="underline">
+              Завести в настройках
+            </Link>
+          </p>
         </div>
       )}
     </main>
