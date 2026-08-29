@@ -72,9 +72,10 @@ property appear in `required`.
 | Recurrence | `lib/recurrence.ts` | Rule + exceptions → occurrences; pure function |
 | Schema & validation | `lib/schema.ts`, `lib/validate.ts` | Shape of the model's answer, rejection of bad operations |
 | Apply & undo | `lib/apply.ts` | Transaction, snapshot, batch rollback |
-| Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | The only places that know about Anthropic |
+| Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | Turn a parsed phrase into a request against the model |
+| User keys | `lib/key-client.ts`, `lib/verify-key.ts`, `lib/user-key.ts` | Build a client from the caller's own key, verify it with a real request, encrypt it at rest |
 | Data access | `lib/db.ts`, `lib/week.ts` | Queries and week assembly |
-| HTTP | `app/api/*` | Nine routes: week, command, clarify, undo, task, settings, push, notify, auth |
+| HTTP | `app/api/*` | Ten routes: week, command, clarify, undo, task, settings, key, push, notify, auth |
 | UI | `app/page.tsx`, `components/*` | Grid, day feed, task card, command bar |
 
 Wide screens get a week grid with an hour ruler; narrow ones get a day feed. The
@@ -213,12 +214,18 @@ the migration has to come after the first login, not before it.
 
 | Variable | What it is |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Key from console.anthropic.com |
+| `ANTHROPIC_API_KEY` | Only for the paid parsing tests (`RUN_LLM_TESTS=1`). The app itself uses each user's own key, entered in settings |
+| `KEY_ENCRYPTION_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`). Encrypts users' Anthropic keys at rest. Losing it means everyone re-enters their key |
 | `DATABASE_URL` | Supabase **transaction pooler**, port **6543** |
 | `BETTER_AUTH_URL` | Base URL of the app, used for OAuth callbacks |
 | `BETTER_AUTH_SECRET` | Random string, 32+ characters, used by Better Auth |
 | `GOOGLE_CLIENT_ID` | OAuth client ID from Google Cloud Console |
 | `GOOGLE_CLIENT_SECRET` | OAuth client secret from Google Cloud Console |
+
+Each user's Anthropic key is entered in settings and stored encrypted
+(`aes-256-gcm`, the owner's id folded into the additional authenticated data
+so a ciphertext moved to another user's row simply fails to decrypt) — it is
+never returned to the client, not even truncated.
 
 Login is Google OAuth via Better Auth (`lib/auth.ts`); only addresses listed in
 the `allowed_emails` table can get a session (`lib/allowed-emails.ts`).
