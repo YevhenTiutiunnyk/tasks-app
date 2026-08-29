@@ -72,7 +72,7 @@ property appear in `required`.
 | Recurrence | `lib/recurrence.ts` | Rule + exceptions → occurrences; pure function |
 | Schema & validation | `lib/schema.ts`, `lib/validate.ts` | Shape of the model's answer, rejection of bad operations |
 | Apply & undo | `lib/apply.ts` | Transaction, snapshot, batch rollback |
-| Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | Turn a parsed phrase into a request against the model |
+| Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | Turn a dictated phrase into a request against the model |
 | User keys | `lib/key-client.ts`, `lib/verify-key.ts`, `lib/user-key.ts` | Build a client from the caller's own key, verify it with a real request, encrypt it at rest |
 | Data access | `lib/db.ts`, `lib/week.ts` | Queries and week assembly |
 | HTTP | `app/api/*` | Ten routes: week, command, clarify, undo, task, settings, key, push, notify, auth |
@@ -226,6 +226,12 @@ Each user's Anthropic key is entered in settings and stored encrypted
 (`aes-256-gcm`, the owner's id folded into the additional authenticated data
 so a ciphertext moved to another user's row simply fails to decrypt) — it is
 never returned to the client, not even truncated.
+
+Losing `KEY_ENCRYPTION_KEY` has no visible symptom of its own: the main
+screen keeps showing the input bar (`hasKey` only checks that a ciphertext
+is stored, it never decrypts), and settings keeps showing "key set" — the
+only sign is every phrase failing to parse. There is no server-side fix;
+each person has to open settings and hit "Replace" to re-enter their key.
 
 Login is Google OAuth via Better Auth (`lib/auth.ts`); only addresses listed in
 the `allowed_emails` table can get a session (`lib/allowed-emails.ts`).
