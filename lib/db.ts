@@ -2,6 +2,7 @@ import 'server-only';
 import postgres from 'postgres';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import type { Category, Recurrence, RecurrenceException, Settings, Task } from './types';
+import type { SealedKey } from './user-key';
 
 // prepare: false — обязательно для транзакционного пулера Supabase (порт 6543).
 export const sql = postgres(process.env.DATABASE_URL!, { prepare: false });
@@ -250,4 +251,114 @@ export async function markSent(keys: string[]): Promise<void> {
 /** Иначе таблица отметок росла бы вечно. */
 export async function purgeOldSent(): Promise<void> {
   await sql`delete from notifications_sent where sent_at < now() - interval '7 days'`;
+}
+
+/* ---------- ключи Anthropic ---------- */
+
+export interface UserKeyRow {
+  present: boolean;
+  sealed: SealedKey | null;
+  keySetAt: Date | null;
+  failedAttempts: number;
+  lockedUntil: Date | null;
+}
+
+/** null — строки нет вовсе (человек ни разу не пробовал завести ключ). */
+export async function getUserKey(userId: string): Promise<UserKeyRow | null> {
+  const [row] = await sql`select * from user_api_keys where user_id = ${userId}`;
+  if (!row) return null;
+  // Признак «ключ заведён» — заполненный шифротекст, а не наличие строки:
+  // строка создаётся и при первой неудачной попытке, ради счётчика.
+  const present = row.key_ciphertext !== null;
+  return {
+    present,
+    sealed: present
+      ? { iv: row.key_iv, tag: row.key_tag, ciphertext: row.key_ciphertext }
+      : null,
+    keySetAt: row.key_set_at,
+    failedAttempts: row.failed_attempts,
+    lockedUntil: row.locked_until,
+  };
+}
+
+/**
+ * Отдельный запрос, а не getUserKey(...)?.present: его зовёт загрузка недели,
+ * и тащить оттуда байты шифротекста ради одного флажка незачем.
+ */
+export async function hasUserKey(userId: string): Promise<boolean> {
+  const [row] = await sql`
+    select 1 from user_api_keys
+    where user_id = ${userId} and key_ciphertext is not null
+  `;
+  return row !== undefined;
+}
+
+/** Успешная проверка ключа: сохраняем и снимаем всё, что накопил счётчик. */
+export async function saveUserKey(userId: string, sealed: SealedKey): Promise<void> {
+  await sql`
+    insert into user_api_keys
+      (user_id, key_iv, key_tag, key_ciphertext, key_set_at, failed_attempts, locked_until)
+    values
+      (${userId}, ${sealed.iv}, ${sealed.tag}, ${sealed.ciphertext}, now(), 0, null)
+    on conflict (user_id) do update set
+      key_iv          = excluded.key_iv,
+      key_tag         = excluded.key_tag,
+      key_ciphertext  = excluded.key_ciphertext,
+      key_set_at      = excluded.key_set_at,
+      failed_attempts = 0,
+      locked_until    = null
+  `;
+}
+
+/**
+ * Убирает ключ, но НЕ строку и НЕ счётчик.
+ *
+ * Удали строку целиком — и «убрать ключ» стало бы лазейкой из часовой паузы:
+ * запертый человек убирает ключ, счётчик исчезает вместе со строкой, и пять
+ * попыток выдаются заново.
+ */
+export async function clearUserKey(userId: string): Promise<void> {
+  await sql`
+    update user_api_keys set
+      key_iv         = null,
+      key_tag        = null,
+      key_ciphertext = null,
+      key_set_at     = null
+    where user_id = ${userId}
+  `;
+}
+
+/**
+ * Неудачная попытка: +1 к счётчику, при достижении maxAttempts — пауза.
+ *
+ * Одним оператором, а не чтением с последующей записью: попытки могут идти
+ * с двух экземпляров Vercel разом, и чтение-запись потеряло бы одну из них.
+ */
+export async function registerKeyFailure(
+  userId: string,
+  maxAttempts: number,
+  lockSeconds: number,
+): Promise<{ failedAttempts: number; lockedUntil: Date | null }> {
+  const [row] = await sql`
+    insert into user_api_keys (user_id, failed_attempts, locked_until)
+    values (${userId}, 1, null)
+    on conflict (user_id) do update set
+      -- Истёкшая пауза начинает новую серию. Иначе счётчик рос бы дальше
+      -- предела, и первый же промах после её окончания запирал бы снова —
+      -- то есть часовая пауза стала бы вечной блокировкой.
+      failed_attempts = case
+        when user_api_keys.locked_until is not null
+             and user_api_keys.locked_until <= now() then 1
+        else user_api_keys.failed_attempts + 1
+      end,
+      locked_until = case
+        when user_api_keys.locked_until is not null
+             and user_api_keys.locked_until <= now() then null
+        when user_api_keys.failed_attempts + 1 >= ${maxAttempts}
+          then now() + make_interval(secs => ${lockSeconds})
+        else user_api_keys.locked_until
+      end
+    returning failed_attempts, locked_until
+  `;
+  return { failedAttempts: row.failed_attempts, lockedUntil: row.locked_until };
 }
