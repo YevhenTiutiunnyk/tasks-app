@@ -30,6 +30,10 @@ export default function SettingsPage() {
   const [keyEditing, setKeyEditing] = useState(false);
   const [keyStatus, setKeyStatus] = useState('');
   const [keyBusy, setKeyBusy] = useState(false);
+  const [keyLoadError, setKeyLoadError] = useState('');
+  // Кнопка «Повторить» меняет этот счётчик, и загрузка идёт заново. Тот же
+  // приём, что у перезагрузки недели в app/page.tsx.
+  const [keyReloadToken, setKeyReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,8 +62,16 @@ export default function SettingsPage() {
     return () => { cancelled = true; };
   }, [router]);
 
-  // Отдельно от загрузки настроек: у /api/key свой роут и свои отказы,
-  // смешивать с /api/settings нельзя.
+  /**
+   * Отдельно от загрузки настроек: у /api/key свой роут и свои отказы,
+   * смешивать с /api/settings нельзя.
+   *
+   * Оба отказа обязаны заполнить keyLoadError. Пока они выходили молча,
+   * keyState навсегда оставался null, и секция вечно показывала «Загружаю…»:
+   * ни причины, ни возможности ввести ключ. Причём человек с уже заведённым
+   * ключом попадал в тот же тупик — единственным выходом была перезагрузка
+   * страницы.
+   */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -69,16 +81,21 @@ export default function SettingsPage() {
           router.push('/login');
           return;
         }
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (!cancelled) setKeyLoadError('Не удалось узнать, заведён ли ключ');
+          return;
+        }
         const loaded = await response.json();
-        if (!cancelled) setKeyState(loaded);
+        if (!cancelled) {
+          setKeyLoadError('');
+          setKeyState(loaded);
+        }
       } catch {
-        // Молча: экран настроек уже показывает свою ошибку связи, вторая
-        // плашка про то же самое только запутает.
+        if (!cancelled) setKeyLoadError('Нет связи с сервером');
       }
     })();
     return () => { cancelled = true; };
-  }, [router]);
+  }, [router, keyReloadToken]);
 
   if (loadError) return <main className="p-6 text-sm text-red-600">{loadError}</main>;
   if (!settings) return <main className="p-6 text-sm text-muted">Загружаю…</main>;
@@ -418,9 +435,27 @@ export default function SettingsPage() {
       <section className="space-y-2">
         <h2 className="text-sm font-medium">Ключ Anthropic</h2>
 
-        {keyState === null ? (
+        {/*
+          Отказ загрузки не отнимает действие: ниже всё равно рисуется форма
+          ввода, потому что неудачный GET ничего не говорит о том, примет ли
+          ключ PUT. Отнять форму значило бы запереть человека в тупике.
+        */}
+        {keyLoadError && (
+          <div className="space-y-2">
+            <p className="text-xs text-red-600">{keyLoadError}</p>
+            <button
+              type="button"
+              onClick={() => setKeyReloadToken((token) => token + 1)}
+              className="rounded-md border border-hairline bg-surface px-3 py-1.5 text-xs"
+            >
+              Повторить
+            </button>
+          </div>
+        )}
+
+        {keyState === null && !keyLoadError ? (
           <p className="text-xs text-muted">Загружаю…</p>
-        ) : keyState.present && !keyEditing ? (
+        ) : keyState?.present && !keyEditing ? (
           <div className="space-y-2 text-sm">
             <p className="text-xs text-muted">
               Ключ заведён{' '}
@@ -475,13 +510,17 @@ export default function SettingsPage() {
               >
                 {keyBusy ? '…' : 'Сохранить'}
               </button>
-              {keyState.present && keyEditing && (
+              {keyState?.present && keyEditing && (
                 <button
                   type="button"
                   onClick={() => {
                     setKeyEditing(false);
                     setKeyInput('');
+                    // Иначе прошлое сообщение об отказе висит над видом
+                    // «Ключ заведён» и выглядит так, будто относится к нему.
+                    setKeyStatus('');
                   }}
+                  disabled={keyBusy}
                   className="rounded-md border border-hairline bg-surface px-4 py-2 text-sm disabled:opacity-50"
                 >
                   Отмена

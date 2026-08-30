@@ -59,6 +59,10 @@ export async function POST(request: Request) {
         console.error('parseClarification failed', error);
         return anthropicFailure(error);
       }
+      // Логируем и здесь: без этого невалидная по схеме выдача модели уходила
+      // бы в failed совсем бесследно — на сервере не осталось бы ни строки,
+      // и разбираться было бы не с чем.
+      console.error('parseClarification failed (ответ пропущен)', error);
       failed.push(answer.taskId);
       continue;
     }
