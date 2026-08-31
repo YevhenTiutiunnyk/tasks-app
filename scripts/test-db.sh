@@ -82,6 +82,14 @@ SQL
 echo "== Миграция 0005 =="
 psql_exec < "$MIGRATIONS_DIR/0005_user_keys.sql"
 
+# 0006 догоняет фазу 3 из 0004: та применена к боевой базе вручную, но в файле
+# осталась закомментированной, и потому здесь никогда не выполнялась. Без неё
+# в контейнере user_id остаётся необязательным, и вставка без владельца
+# проходит зелёной, а в бою падает. Порядок важен: 0006 требует, чтобы
+# колонки уже существовали (их добавляет фаза 1 из 0004).
+echo "== Миграция 0006 =="
+psql_exec < "$MIGRATIONS_DIR/0006_ownership_not_null.sql"
+
 tables=$(docker exec "$CONTAINER" psql -U "$PGUSER" -d "$DB" -tAc \
   "select count(*) from information_schema.tables where table_schema = 'public'")
 echo "== Готово: таблиц в public — $tables =="
