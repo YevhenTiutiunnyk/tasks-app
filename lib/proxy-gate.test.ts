@@ -134,6 +134,9 @@ run('замок: белый список на каждом запросе', () =
     const response = await proxy(new NextRequest('http://localhost/api/week?date=2030-03-04'));
 
     expect(response.status).toBe(401);
+    // Тело слово в слово повторяет ветку «сессии нет вовсе» — для клиента
+    // это одно и то же состояние (см. doc-комментарий denyResponse).
+    expect(await response.json()).toEqual({ error: 'Не авторизован' });
   });
 
   it('адреса нет — сессии этого владельца сняты', async () => {
@@ -165,6 +168,9 @@ run('замок: белый список на каждом запросе', () =
     const response = await proxy(new NextRequest('http://localhost/settings'));
 
     expect(response.status).toBe(503);
+    // То же тело, что и при обрыве getSession выше по стеку: для клиента
+    // это один и тот же случай «попробуй позже», а не отказ входа.
+    expect(await response.json()).toEqual({ error: 'Сервис временно недоступен' });
   });
 
   it('проверка бросила — сессии НЕ сняты', async () => {

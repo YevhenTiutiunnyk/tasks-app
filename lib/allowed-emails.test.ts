@@ -80,7 +80,11 @@ run('allowed-emails', () => {
     });
 
     afterAll(async () => {
-      // Адресно и до удаления пользователей: внешний ключ иначе не даст.
+      // Адресно и до удаления пользователей — явно, а не в расчёте на
+      // каскад: session."userId" объявлен on delete cascade (миграция 0003)
+      // и снял бы эти строки сам. Явное удаление здесь не потому, что без
+      // него внешний ключ не даст удалить пользователей, — порядок ради
+      // наглядности.
       await sql`delete from session where "userId" in (${OWNER}, ${NEIGHBOUR})`;
       await sql`delete from "user" where id in (${OWNER}, ${NEIGHBOUR})`;
     });

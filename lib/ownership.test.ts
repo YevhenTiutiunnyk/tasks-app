@@ -121,6 +121,16 @@ import { POST as notifyPost } from '@/app/api/notify/route';
 // Домен .invalid зарезервирован стандартом и не может принадлежать человеку.
 const A = 'zz-owner-a@example.invalid';
 const B = 'zz-owner-b@example.invalid';
+// Адрес B в "user" — в смешанном регистре, а его id (заводится в beforeAll)
+// разведён с самим адресом. Иначе тест не отличил бы верное соединение
+// getNotifiableUsers (join allowed_emails a on a.email = lower(u.email))
+// от испорченного: в бою id Better Auth — случайный токен, а не адрес, и
+// без lower() адрес с заглавной не совпал бы с закреплённым нижним
+// регистром allowed_emails. При id = email = один и тот же нижнерегистровый
+// текст (как было раньше) обе порчи остаются незамеченными — ровно тот же
+// класс дефекта, что нашёлся и был исправлен в lib/proxy-gate.test.ts
+// (коммит d2eb873).
+const B_MIXED_CASE_EMAIL = 'zz-owner-B@example.invalid';
 // Третий нужен ровно для одного случая: человек, у которого строки настроек
 // нет вовсе. У A и B она к тому моменту уже есть, а путь «телефон прислал
 // пояс раньше, чем настройки хоть раз сохранили» — это первая команда
@@ -178,7 +188,12 @@ async function clean() {
   // удалении "user" ниже, но чистим явно — как и остальные таблицы здесь,
   // чтобы порядок был виден и не зависел от свойств внешнего ключа.
   await sql`delete from push_subscriptions where user_id in (${idA}, ${idB}, ${idC})`;
-  await sql`delete from "user" where email in (${A}, ${B}, ${C})`;
+  // По id, а не по адресу: у B в "user" адрес в смешанном регистре и не
+  // совпадает с константой B, которой чистка ниже (allowed_emails) и так
+  // пользуется по адресу законно — там регистр закреплён ограничением.
+  // Чистка по email in (A, B, C) молча перестала бы находить B, и следующий
+  // прогон споткнулся бы на on conflict (id) do nothing при повторной вставке.
+  await sql`delete from "user" where id in (${idA}, ${idB}, ${idC})`;
 
   // А теперь — ничьи строки, по названию, а не по владельцу. Так убирается
   // ровно тот мусор, который оставляет регресс владельца, пойманный этими же
@@ -207,7 +222,11 @@ async function clean() {
 run('изоляция по владельцу', () => {
   beforeAll(async () => {
     idA = A;
-    idB = B;
+    // Непрозрачный id, а не B: см. комментарий у объявления
+    // B_MIXED_CASE_EMAIL выше — id обязан не совпадать текстуально
+    // с адресом, иначе join по u.id «случайно» находил бы ту же строку,
+    // что и верный join по адресу.
+    idB = 'zz-owner-b-id';
     idC = C;
 
     // ПРЕДОХРАНИТЕЛЬ НА ВЕСЬ ФАЙЛ, и стоит он здесь не случайно.
@@ -249,10 +268,15 @@ run('изоляция по владельцу', () => {
 
     // C заводится только в "user": ни задач, ни правил, ни настроек —
     // в этом весь смысл, он остаётся человеком без строки в user_settings.
-    for (const email of [A, B, C]) {
+    //
+    // У B — id и адрес разведены, и адрес вдобавок в смешанном регистре
+    // (см. B_MIXED_CASE_EMAIL). У A и C id по-прежнему равен адресу — портить
+    // сразу всех не нужно, достаточно одного, чтобы обе порчи из Important 1
+    // финального ревью красили тест.
+    for (const [id, email] of [[idA, A], [idB, B_MIXED_CASE_EMAIL], [idC, C]] as const) {
       await sql`
         insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
-        values (${email}, ${email}, ${email}, false, now(), now())
+        values (${id}, ${id}, ${email}, false, now(), now())
         on conflict (id) do nothing
       `;
     }
@@ -301,7 +325,10 @@ run('изоляция по владельцу', () => {
 
   afterAll(async () => {
     await sql`delete from allowed_emails where email in (${A}, ${B}, ${C})`;
-    // До удаления пользователей: внешний ключ иначе не даст.
+    // Явно и до удаления пользователей — не потому что внешний ключ иначе
+    // не даст: user_api_keys.user_id объявлен on delete cascade (миграция
+    // 0005) и снялся бы сам. Явная строка здесь для порядка, а не потому,
+    // что каскад его требует.
     await sql`delete from user_api_keys where user_id in (${idA}, ${idB}, ${idC})`;
     // Только свои строки. delete без условий здесь стоил бы владельцу расписания.
     await clean();
