@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { auth } from '@/lib/auth';
+import { isEmailAllowed, revokeSessions } from '@/lib/allowed-emails';
 
 // Начиная с Next 16 это соглашение зовётся `proxy`: файл называется proxy.ts,
 // функция — proxy. Прежнее имя, middleware, ещё работает, но собирается
@@ -41,6 +42,43 @@ export async function proxy(request: NextRequest) {
     return NextResponse.json({ error: 'Сервис временно недоступен' }, { status: 503 });
   }
   if (result.response) {
+    // Белый список проверяется здесь, на КАЖДОМ запросе, а не только при
+    // создании сессии. Без этого убранный из allowed_emails адрес работал бы
+    // до 30 дней — столько живёт сессия, а скольжение продлевает срок при
+    // каждом визите, то есть у активного человека доступ не кончился бы
+    // никогда.
+    //
+    // Адрес берётся из уже полученной сессии: getSession возвращает
+    // { session, user }, и лишнего запроса за ним не нужно.
+    let allowed: boolean;
+    try {
+      allowed = await isEmailAllowed(result.response.user.email);
+    } catch (error) {
+      // Тот же ответ, что и на обрыве getSession выше, и по той же причине.
+      // Проверка допуска, которая при моргнувшей базе молча пропускает, —
+      // не проверка. Выбрасывать на вход тоже нельзя: вход без базы не
+      // сработает, получилась бы дорога в никуда.
+      console.error('proxy: не удалось проверить белый список', error);
+      return NextResponse.json({ error: 'Сервис временно недоступен' }, { status: 503 });
+    }
+
+    if (!allowed) {
+      const userId = result.response.user.id;
+      // Снимаем сессии со всех устройств: отзыв по адресу, а не по браузеру.
+      // Без этого человек бился бы в закрытую дверь до естественного
+      // истечения сессии, тратя по два запроса к базе на каждую попытку.
+      const revoked = await revokeSessions(userId);
+      // В лог идёт userId, а не адрес: идентификатора хватает, чтобы найти
+      // строку, а раскладывать почту людей по логам Vercel незачем.
+      console.error(`proxy: доступ отозван, userId=${userId}, снято сессий: ${revoked}`);
+      // Заголовки НЕ переносим — вот это важно. result.headers могут нести
+      // свежую куку сессии, которую Better Auth приготовил при скольжении
+      // срока. Отдать её человеку, у которого мы только что удалили сессию,
+      // значило бы вручить ключ от снятого замка. Куку уберёт следующий же
+      // запрос: сессии в базе больше нет, и сработает ветка «сессии нет».
+      return denyResponse(request, new Headers());
+    }
+
     const response = NextResponse.next();
     // Скольжение срока живёт здесь. По истечении updateAge getSession сам
     // продлевает строку сессии в базе и кладёт свежую куку в заголовки своего
@@ -51,18 +89,9 @@ export async function proxy(request: NextRequest) {
     // возврату на страницу входа.
     return withSetCookies(response, result.headers);
   }
-  if (request.nextUrl.pathname.startsWith('/api/')) {
-    // Сессии нет, но кука в запросе могла быть — протухшей. В этом случае
-    // getSession сам зовёт deleteSessionCookie и кладёт в result.headers
-    // команду на удаление (node_modules/better-auth/dist/api/routes/session.mjs,
-    // ветка истёкшей сессии). Не перенеси мы её — браузер держал бы мёртвую
-    // куку до её собственного Max-Age (до 30 дней), и каждый запрос заново
-    // бил бы в базу впустую. Открыть это не открывает: команда одна —
-    // на удаление, продлевать здесь нечего.
-    return withSetCookies(NextResponse.json({ error: 'Не авторизован' }, { status: 401 }), result.headers);
-  }
-  // Та же чистка и по той же причине — для страниц.
-  return withSetCookies(NextResponse.redirect(new URL('/login', request.url)), result.headers);
+  // Сессии нет. Кука в запросе могла быть протухшей — тогда getSession уже
+  // положил в result.headers команду на её удаление, и её надо перенести.
+  return denyResponse(request, result.headers);
 }
 
 // Общее место для переноса Set-Cookie из ответа Better Auth в ответ прокси.
@@ -76,6 +105,31 @@ function withSetCookies<T extends NextResponse>(response: T, headers: Headers): 
     response.headers.append('set-cookie', cookie);
   }
   return response;
+}
+
+/**
+ * Ответ «доступа нет»: страницам — на вход, api — 401.
+ *
+ * Вынесено потому, что таких мест стало два: сессии действительно нет, либо
+ * она есть, но адрес убрали из белого списка. Для клиента это одно и то же
+ * состояние, и отвечать надо одинаково — две копии разъехались бы при первой
+ * же правке, ровно как это случилось бы с withSetCookies.
+ */
+function denyResponse(request: NextRequest, headers: Headers): NextResponse {
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    // Кука в запросе могла быть протухшей — тогда getSession сам зовёт
+    // deleteSessionCookie и кладёт в headers команду на её удаление
+    // (node_modules/better-auth/dist/api/routes/session.mjs, ветка истёкшей
+    // сессии). Не перенеси мы её — браузер держал бы мёртвую куку до её
+    // собственного Max-Age (до 30 дней), и каждый запрос заново бил бы
+    // в базу впустую.
+    return withSetCookies(
+      NextResponse.json({ error: 'Не авторизован' }, { status: 401 }),
+      headers,
+    );
+  }
+  // Та же чистка и по той же причине — для страниц.
+  return withSetCookies(NextResponse.redirect(new URL('/login', request.url)), headers);
 }
 
 // Всё, кроме статики, страницы входа и роутов Better Auth.

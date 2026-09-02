@@ -9,6 +9,14 @@ const getSession = vi.fn();
 // бою всегда получала бы null — то есть отказ входа всем подряд, незаметно.
 vi.mock('@/lib/auth', () => ({ auth: { api: { getSession: (opts: unknown) => getSession(opts) } } }));
 
+// Этот файл проверяет механику сессии и кук, а не белый список — для него
+// отдельный файл, lib/proxy-gate.test.ts. Без этого мока проверка допуска
+// звала бы настоящую базу за адресом, которого у здешних сессий нет.
+vi.mock('@/lib/allowed-emails', () => ({
+  isEmailAllowed: () => Promise.resolve(true),
+  revokeSessions: vi.fn(),
+}));
+
 const { proxy } = await import('./proxy');
 
 /**
