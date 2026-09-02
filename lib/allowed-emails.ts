@@ -18,10 +18,33 @@ export async function isEmailAllowed(email: string): Promise<boolean> {
  * Адрес по идентификатору пользователя Better Auth.
  *
  * Таблица называется user — зарезервированное слово Postgres, отсюда кавычки.
- * Это единственное место, где мы читаем чужую таблицу напрямую: хук допуска
- * получает только userId, а решение принимается по адресу.
+ * Этот модуль — единственное место, которое обращается к таблицам Better Auth
+ * напрямую: хук допуска получает только userId, а решение принимается по адресу,
+ * и revokeSessions удаляет сессии непосредственно.
  */
 export async function getUserEmailById(userId: string): Promise<string | null> {
   const rows = await sql`select email from "user" where id = ${userId}`;
   return rows.length > 0 ? (rows[0].email as string) : null;
+}
+
+/**
+ * Снять доступ: удалить все сессии владельца.
+ *
+ * Зовётся из proxy.ts, когда у вошедшего человека адреса больше нет в белом
+ * списке. Отзыв по адресу, а не по браузеру, поэтому снимаются сессии со всех
+ * устройств разом.
+ *
+ * Удаление адресное, по userId: правило проекта запрещает delete без условий,
+ * и здесь условие единственное.
+ *
+ * Кавычки вокруг "userId" обязательны — Better Auth называет колонки
+ * в camelCase, и без кавычек Postgres приведёт имя к нижнему регистру
+ * и колонку не найдёт.
+ *
+ * Возвращает число снятых сессий: оно нужно не вызывающему, а логу прокси —
+ * это единственный след события, которого больше нигде не остаётся.
+ */
+export async function revokeSessions(userId: string): Promise<number> {
+  const rows = await sql`delete from session where "userId" = ${userId} returning id`;
+  return rows.length;
 }
