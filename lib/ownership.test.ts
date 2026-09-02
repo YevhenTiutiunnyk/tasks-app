@@ -4,13 +4,13 @@ import {
   addSubscription,
   clearUserKey,
   getExceptions,
+  getNotifiableUsers,
   getRecurrences,
   getSettings,
   getSubscriptions,
   getTasksBetween,
   getTimezone,
   getUserKey,
-  getUsersWithSubscriptions,
   removeSubscription,
   saveSettings,
   saveTimezone,
@@ -287,9 +287,20 @@ run('изоляция по владельцу', () => {
     for (const id of [idA, idB, idC]) {
       await saveUserKey(id, encryptApiKey(id, 'sk-ant-zz-ключ-для-теста-владельцев'));
     }
+
+    // Планировщик теперь шлёт только тем, кто в белом списке. До этой правки
+    // тест жил в мире, где он шлёт кому угодно, — мир изменился.
+    // Адреса уже в нижнем регистре, а в allowed_emails он закреплён
+    // ограничением check (email = lower(email)).
+    for (const email of [A, B, C]) {
+      await sql`
+        insert into allowed_emails (email) values (${email}) on conflict (email) do nothing
+      `;
+    }
   });
 
   afterAll(async () => {
+    await sql`delete from allowed_emails where email in (${A}, ${B}, ${C})`;
     // До удаления пользователей: внешний ключ иначе не даст.
     await sql`delete from user_api_keys where user_id in (${idA}, ${idB}, ${idC})`;
     // Только свои строки. delete без условий здесь стоил бы владельцу расписания.
@@ -1022,11 +1033,42 @@ run('изоляция по владельцу', () => {
       try {
         await addSubscription(idA, { endpoint, p256dh: 'p3', auth: 'a3' });
 
-        const owners = await getUsersWithSubscriptions();
+        const owners = await getNotifiableUsers();
         expect(owners).toContain(idA);
         expect(owners).not.toContain(idC);
       } finally {
         await removeSubscription(idA, endpoint);
+      }
+    });
+
+    it('отозванный владелец исчезает из выборки, а сосед остаётся', async () => {
+      const endpointA = 'https://zz.invalid/push/revoke-a';
+      const endpointB = 'https://zz.invalid/push/revoke-b';
+      try {
+        await addSubscription(idA, { endpoint: endpointA, p256dh: 'p9', auth: 'a9' });
+        await addSubscription(idB, { endpoint: endpointB, p256dh: 'p8', auth: 'a8' });
+
+        expect(await getNotifiableUsers()).toEqual(expect.arrayContaining([idA, idB]));
+
+        // Отзыв: адрес убирается из белого списка.
+        await sql`delete from allowed_emails where email = ${B}`;
+
+        const after = await getNotifiableUsers();
+        expect(after).not.toContain(idB);
+        // Сосед не задет — фильтр по адресу, а не «выключить уведомления всем».
+        expect(after).toContain(idA);
+
+        // Отзыв — не удаление: подписка отозванного осталась на месте,
+        // и вернув адрес в список, он снова начнёт получать напоминания,
+        // ничего не включая заново.
+        const rows = await sql`select 1 from push_subscriptions where user_id = ${idB}`;
+        expect(rows.length).toBe(1);
+      } finally {
+        await sql`
+          insert into allowed_emails (email) values (${B}) on conflict (email) do nothing
+        `;
+        await removeSubscription(idA, endpointA);
+        await removeSubscription(idB, endpointB);
       }
     });
   });
@@ -1286,12 +1328,12 @@ run('изоляция по владельцу', () => {
       await addSubscription(idB, { endpoint: endpointB, p256dh: 'pbb', auth: 'abb' });
 
       // Кого ломать — не выбор, а вычисление. Порядок владельцев в роуте
-      // задаёт getUsersWithSubscriptions (select distinct, порядок строк
+      // задаёт getNotifiableUsers (select distinct, порядок строк
       // не определён), и сломать надо того, кто в ЭТОМ прогоне идёт первым:
       // сломай второго — и первый успел бы получить своё ещё до исключения,
       // а тогда тест остался бы зелёным и с try/catch снаружи цикла, то есть
       // не проверял бы ничего.
-      const order = (await getUsersWithSubscriptions())
+      const order = (await getNotifiableUsers())
         .filter((id) => id === idA || id === idB);
       const endpointOf: Record<string, string> = { [idA]: endpointA, [idB]: endpointB };
       const titleOf: Record<string, string> = { [idA]: 'ZZ-сбой A', [idB]: 'ZZ-сбой B' };

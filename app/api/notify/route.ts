@@ -2,10 +2,10 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import webpush from 'web-push';
 import {
+  getNotifiableUsers,
   getSentKeys,
   getSettings,
   getSubscriptions,
-  getUsersWithSubscriptions,
   markSent,
   purgeOldSent,
   removeSubscription,
@@ -50,8 +50,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
   }
 
-  // Список берётся из подписок: слать некому тем, кто уведомления не включал.
-  const userIds = await getUsersWithSubscriptions();
+  // Список берётся из подписок и сверяется с белым списком: слать некому тем,
+  // кто уведомления не включал, и нельзя тем, у кого отозван доступ.
+  const userIds = await getNotifiableUsers();
 
   webpush.setVapidDetails(
     'mailto:yevhen.tuk@gmail.com',

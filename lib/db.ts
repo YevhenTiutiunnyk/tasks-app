@@ -224,12 +224,31 @@ export async function removeSubscription(userId: string, endpoint: string): Prom
 }
 
 /**
- * Владельцы, которым есть что слать. Список берётся из подписок, а не из
- * "user": рассылать нечего тем, кто уведомления не включал, а в "user"
- * попадают строки от отвергнутых белым списком попыток входа.
+ * Кому вообще слать уведомления.
+ *
+ * Не «все владельцы подписок». Планировщик вынесен из-под прокси (исключён
+ * в матчере, защищён NOTIFY_SECRET), поэтому проверка белого списка из
+ * proxy.ts его не накрывает и накрыть не может — фильтр обязан стоять здесь.
+ *
+ * Без него отозванный человек не смог бы открыть приложение, но его телефон
+ * продолжал бы получать напоминания с нашей инфраструктуры — и выключить их
+ * он бы уже не смог, потому что не вошёл бы.
+ *
+ * lower(u.email): в allowed_emails регистр закреплён ограничением
+ * check (email = lower(email)), а адрес от Google приходит каким угодно.
+ * То же приведение делает isEmailAllowed. Без него отзыв работал бы, а
+ * уведомления продолжали бы идти тому, у кого адрес записан с заглавной.
+ *
+ * Фильтр в запросе, а не в цикле роута: один запрос вместо одного на каждого.
  */
-export async function getUsersWithSubscriptions(): Promise<string[]> {
-  const rows = await sql`select distinct user_id from push_subscriptions where user_id is not null`;
+export async function getNotifiableUsers(): Promise<string[]> {
+  const rows = await sql`
+    select distinct p.user_id
+    from push_subscriptions p
+    join "user" u         on u.id = p.user_id
+    join allowed_emails a on a.email = lower(u.email)
+    where p.user_id is not null
+  `;
   return rows.map((row) => row.user_id as string);
 }
 
