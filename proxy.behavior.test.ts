@@ -10,10 +10,12 @@ const getSession = vi.fn();
 vi.mock('@/lib/auth', () => ({ auth: { api: { getSession: (opts: unknown) => getSession(opts) } } }));
 
 // Этот файл проверяет механику сессии и кук, а не белый список — для него
-// отдельный файл, lib/proxy-gate.test.ts. Без этого мока проверка допуска
-// звала бы настоящую базу за адресом, которого у здешних сессий нет.
+// отдельный файл, lib/proxy-gate.test.ts. Заглушка обязана читать свой
+// аргумент, а не игнорировать его — тот же принцип, что и у getSession
+// выше: иначе она осталась бы «true» и для сессии без email, и не заметила
+// бы, передай ей proxy.ts что-то другое (например id вместо email).
 vi.mock('@/lib/allowed-emails', () => ({
-  isEmailAllowed: () => Promise.resolve(true),
+  isEmailAllowed: (email: unknown) => Promise.resolve(typeof email === 'string' && email.length > 0),
   revokeSessions: vi.fn(),
 }));
 
@@ -36,7 +38,9 @@ beforeEach(() => {
 
 describe('proxy', () => {
   it('пропускает запрос, когда сессия есть', async () => {
-    getSession.mockResolvedValue(sessionResult({ user: { id: 'zz-user' } }));
+    getSession.mockResolvedValue(
+      sessionResult({ user: { id: 'zz-user', email: 'zz-user@example.invalid' } }),
+    );
     const response = await proxy(new NextRequest('https://example.test/'));
     expect(response.status).toBe(200);
     expect(response.headers.get('location')).toBeNull();
@@ -62,7 +66,7 @@ describe('proxy', () => {
     // а не после последнего визита. Молча: пользователь просто однажды
     // оказался бы на странице входа.
     getSession.mockResolvedValue(
-      sessionResult({ user: { id: 'zz-user' } }, [
+      sessionResult({ user: { id: 'zz-user', email: 'zz-user@example.invalid' } }, [
         'zz.session_token=fresh; Path=/; Max-Age=2592000; HttpOnly',
         'zz.session_data=cache; Path=/; Max-Age=300; HttpOnly',
       ]),
