@@ -234,7 +234,12 @@ only sign is every phrase failing to parse. There is no server-side fix;
 each person has to open settings and hit "Replace" to re-enter their key.
 
 Login is Google OAuth via Better Auth (`lib/auth.ts`); only addresses listed in
-the `allowed_emails` table can get a session (`lib/allowed-emails.ts`).
+the `allowed_emails` table can get a session (`lib/allowed-emails.ts`). The list
+is re-checked on every request in `proxy.ts`, not only when the session is
+created: removing an address takes effect immediately, and the person's sessions
+are dropped on all their devices at once. Notifications stop too — the scheduler
+runs outside the proxy, so it joins the same table itself. Nothing else is
+deleted: put the address back and everything is where they left it.
 
 The port matters: on a direct connection (5432) serverless functions exhaust the
 connection limit. For the same reason the pool is created with `prepare: false` —
