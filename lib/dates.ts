@@ -48,3 +48,15 @@ export function eachDay(from: string, to: string): string[] {
   for (let cursor = from; cursor <= to; cursor = addDays(cursor, 1)) days.push(cursor);
   return days;
 }
+
+/**
+ * Сегодняшняя дата по часам устройства.
+ *
+ * Намеренно локальная, а не UTC: человек имеет в виду свой день, а не день
+ * по Гринвичу. Единственное место во всём модуле, которое смотрит на часы,
+ * — остальное чистая арифметика строк.
+ */
+export function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
