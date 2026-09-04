@@ -134,6 +134,7 @@ import { POST as commandPost } from '@/app/api/command/route';
 import { POST as undoPost } from '@/app/api/undo/route';
 import { POST as pushPost, DELETE as pushDelete } from '@/app/api/push/route';
 import { POST as notifyPost } from '@/app/api/notify/route';
+import { GET as checklistGet } from '@/app/api/checklist/route';
 
 // Тестовые пользователи заводятся в отдельной тестовой базе (TEST_DATABASE_URL,
 // см. vitest.setup.ts) — таблица "user" здесь не боевая, а поднятая
@@ -499,8 +500,9 @@ run('изоляция по владельцу', () => {
   });
 
   describe('горизонт: недельные и месячные задачи вне расписания', () => {
-    // Понедельник, вокруг которого крутится весь блок.
-    const MONDAY = '2030-03-04';
+    // Понедельник, вокруг которого крутится весь блок, — та же DATE, что
+    // объявлена выше в файле; отдельная константа с тем же значением была
+    // бы третьей копией одной и той же даты.
 
     async function makeTask(userId: string, title: string, date: string, horizon: string) {
       const [row] = await sql`
@@ -512,9 +514,9 @@ run('изоляция по владельцу', () => {
     }
 
     it('недельная задача не попадает в сетку расписания', async () => {
-      const id = await makeTask(idA, 'ZZ-кран', MONDAY, 'week');
+      const id = await makeTask(idA, 'ZZ-кран', DATE, 'week');
       try {
-        const week = await loadWeek(idA, MONDAY);
+        const week = await loadWeek(idA, DATE);
         // Якорь недельной задачи — тот самый понедельник, поэтому без фильтра
         // она встала бы в сетку первым же днём и выглядела бы как задача,
         // которую кто-то переставил на понедельник.
@@ -539,9 +541,9 @@ run('изоляция по владельцу', () => {
       // ходит в loadRange напрямую, минуя loadWeek. Один тест на общую
       // функцию доказал бы сам фильтр, но не то, что оба пути через него
       // проходят, — а именно это здесь и проверяется.
-      const id = await makeTask(idA, 'ZZ-кран-напоминание', MONDAY, 'week');
+      const id = await makeTask(idA, 'ZZ-кран-напоминание', DATE, 'week');
       try {
-        const tasks = await loadRange(idA, MONDAY, MONDAY);
+        const tasks = await loadRange(idA, DATE, DATE);
         expect(tasks.map((t) => t.title)).not.toContain('ZZ-кран-напоминание');
       } finally {
         await sql`delete from tasks where id = ${id}`;
@@ -551,9 +553,9 @@ run('изоляция по владельцу', () => {
     it('дневная задача на том же дне по-прежнему видна', async () => {
       // Обратная сторона: фильтр не должен вырезать вообще всё. Без этого
       // теста реализация «отдавать пустой список» прошла бы три теста выше.
-      const id = await makeTask(idA, 'ZZ-обычная', MONDAY, 'day');
+      const id = await makeTask(idA, 'ZZ-обычная', DATE, 'day');
       try {
-        const week = await loadWeek(idA, MONDAY);
+        const week = await loadWeek(idA, DATE);
         expect(week.tasks.map((t) => t.title)).toContain('ZZ-обычная');
       } finally {
         await sql`delete from tasks where id = ${id}`;
@@ -561,9 +563,9 @@ run('изоляция по владельцу', () => {
     });
 
     it('горизонт доезжает до объекта задачи', async () => {
-      const id = await makeTask(idA, 'ZZ-горизонт', MONDAY, 'day');
+      const id = await makeTask(idA, 'ZZ-горизонт', DATE, 'day');
       try {
-        const week = await loadWeek(idA, MONDAY);
+        const week = await loadWeek(idA, DATE);
         const task = week.tasks.find((t) => t.title === 'ZZ-горизонт');
         expect(task?.horizon).toBe('day');
       } finally {
@@ -573,8 +575,8 @@ run('изоляция по владельцу', () => {
   });
 
   describe('getChecklistTasks', () => {
-    // DATE — тот же понедельник, что и MONDAY в блоке горизонтов выше;
-    // переиспользуем константу файла вместо третьей копии той же даты.
+    // DATE — та же дата, что использует и блок горизонтов выше;
+    // переиспользуем константу файла вместо второй копии того же понедельника.
 
     async function makeTask(userId: string, title: string, date: string, horizon: string) {
       const [row] = await sql`
@@ -1045,6 +1047,39 @@ run('изоляция по владельцу', () => {
       }
     });
 
+    it('уточнение переводит горизонт задачи в дневной', async () => {
+      // Замечание 3 финального ревью: до правки update в этом роуте не
+      // трогал horizon вовсе. Через интерфейс дыра недостижима — needsTime
+      // сверяется со списком из дневного loadRange, и недельная задача
+      // туда не попадает, — но taskId приходит из тела запроса и проверяется
+      // только на форму и на владельца. Запрос, собранный руками против
+      // собственной недельной задачи, завёл бы ровно ту осиротевшую строку,
+      // которую запрещает инвариант: horizon='week' с конкретными датой
+      // и временем — такая задача не нашлась бы ни сеткой (там
+      // horizon='day'), ни чеклистом (там date обязана быть якорем периода).
+      session.userId = idA;
+      const [task] = await sql`
+        insert into tasks (title, date, all_day, horizon, user_id)
+        values ('ZZ-уточнение-горизонт', ${DATE}, true, 'week', ${idA})
+        returning id
+      `;
+      try {
+        const response = await clarifyPost(
+          request('http://t/api/clarify', 'POST', {
+            today: DATE, answers: [{ taskId: task.id, text: 'ZZ-в десять' }],
+          }),
+        );
+        expect(response.status).toBe(200);
+        const [after] = await sql`select horizon, start_minute from tasks where id = ${task.id}`;
+        // Уточнённая задача получила конкретный день и час — то есть по
+        // определению стала дневной, чем бы ни был горизонт до уточнения.
+        expect(after.horizon).toBe('day');
+        expect(after.start_minute).toBe(600);
+      } finally {
+        await sql`delete from tasks where id = ${task.id}`;
+      }
+    });
+
     it('без ключа роут команды отказывает до обращения к модели', async () => {
       session.userId = idA;
       await clearUserKey(idA);
@@ -1130,6 +1165,38 @@ run('изоляция по владельцу', () => {
       expect(await response.json()).toMatchObject({ undone: false });
       expect((await getTasksBetween(idA, FOURTH, FOURTH)).map((t) => t.title))
         .toEqual(['ZZ-не отдам']);
+    });
+  });
+
+  describe('изоляция чтения в роуте чеклиста', () => {
+    // Мелочь финального ревью: единственный роут без своего теста уровня
+    // роута — у остальных они есть в блоке «изоляция записи в роутах» выше.
+    it('чужие задачи не отдаются', async () => {
+      const [mine] = await sql`
+        insert into tasks (title, date, all_day, horizon, user_id)
+        values ('ZZ-чеклист-моё', ${DATE}, true, 'week', ${idA}) returning id
+      `;
+      const [theirs] = await sql`
+        insert into tasks (title, date, all_day, horizon, user_id)
+        values ('ZZ-чеклист-чужое', ${DATE}, true, 'week', ${idB}) returning id
+      `;
+      try {
+        session.userId = idA;
+        const response = await checklistGet(new Request(`http://t/api/checklist?date=${DATE}`));
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        const weekTitles = (body.week as { title: string }[]).map((t) => t.title);
+        expect(weekTitles).toContain('ZZ-чеклист-моё');
+        expect(weekTitles).not.toContain('ZZ-чеклист-чужое');
+      } finally {
+        await sql`delete from tasks where id in (${mine.id}, ${theirs.id})`;
+      }
+    });
+
+    it('битая дата даёт 400', async () => {
+      session.userId = idA;
+      const response = await checklistGet(new Request('http://t/api/checklist?date=не-дата'));
+      expect(response.status).toBe(400);
     });
   });
 

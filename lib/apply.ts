@@ -38,11 +38,16 @@ async function materializeOccurrence(
     on conflict do nothing
     returning recurrence_id
   `;
+  // horizon = 'day' — не полагаемся на умолчание колонки: миграция 0007
+  // прямо называет его временной мерой на окно между миграцией и выкладкой,
+  // а вхождение серии дневное не по умолчанию, а по определению — правило
+  // повтора описывается днями недели, недельных и месячных повторов не
+  // бывает (та же константа явно стоит в lib/recurrence.ts).
   const [row] = await tx`
     insert into tasks (title, date, start_minute, duration_minutes, all_day, category_id,
-                       recurrence_id, recurrence_date, user_id)
+                       horizon, recurrence_id, recurrence_date, user_id)
     values (${rule.title}, ${date}, ${rule.start_minute}, ${rule.duration_minutes},
-            ${rule.all_day}, ${rule.category_id}, ${recurrenceId}, ${date}, ${userId})
+            ${rule.all_day}, ${rule.category_id}, 'day', ${recurrenceId}, ${date}, ${userId})
     returning *
   `;
   return { task: rowToTask(row), exceptionCreated: exception !== undefined };

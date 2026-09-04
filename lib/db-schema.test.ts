@@ -52,4 +52,22 @@ run('схема: горизонт задачи', () => {
     `;
     expect(row?.is_nullable).toBe('NO');
   });
+
+  // Миграция 0007 называет default 'day' мерой на окно между миграцией
+  // и выкладкой — но это верно только для боевого перехода, а не навсегда.
+  // materializeOccurrence (lib/apply.ts) и другие вставки без явного horizon
+  // полагаются на него постоянно, и after-выкладки он несущий, а не
+  // временный. Тест ловит будущую «уборку»: кто-то прочитает комментарий
+  // миграции буквально, снимет default как отслуживший своё — и вставки,
+  // которые не называют horizon явно, начнут падать на not null.
+  it('у horizon в tasks остаётся default day и после окна выкладки', async () => {
+    const [row] = await sql`
+      select column_default
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'tasks'
+        and column_name = 'horizon'
+    `;
+    expect(row?.column_default).toBe("'day'::text");
+  });
 });

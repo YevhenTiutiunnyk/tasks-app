@@ -469,6 +469,12 @@ run('applyOperations', () => {
         horizon: 'day',
       },
     ]);
+    // Значения из строки после откатов читаются в переменные снаружи finally:
+    // expect внутри finally, упав, маскировал бы исходную ошибку из try, а
+    // сама очистка (оба undoBatch) обязана пройти независимо от того,
+    // что покажут проверки.
+    let restoredHorizon: string | undefined;
+    let restoredDate: Date | undefined;
     try {
       const [after] = await sql`select date, horizon from tasks where id = ${row.id}`;
       // Главное утверждение: дата НЕ приведена к понедельнику, потому что
@@ -484,10 +490,12 @@ run('applyOperations', () => {
       // на 'day' из середины операции, а дата — на четверге: недельная
       // задача не нашлась бы ни в чеклисте, ни (с чужим горизонтом) в сетке.
       const [restored] = await sql`select date, horizon from tasks where id = ${row.id}`;
-      expect(restored.horizon).toBe('week');
-      expect(toIsoDate(restored.date)).toBe(FROM);
+      restoredHorizon = restored.horizon;
+      restoredDate = restored.date;
       await undoBatch(OWNER, created.batchId);
     }
+    expect(restoredHorizon).toBe('week');
+    expect(toIsoDate(restoredDate!)).toBe(FROM);
   });
 
   it('правка называет только горизонт — якорь пересчитывается даже без смены даты', async () => {

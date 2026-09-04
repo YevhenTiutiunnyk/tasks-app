@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { SeriesChoiceDialog } from './SeriesChoiceDialog';
 import { clockToMinutes, formatDuration, formatTimeRange, minutesToClock } from '@/lib/format';
+import { parseOccurrenceId } from '@/lib/recurrence';
 import type { Settings, Task } from '@/lib/types';
 
 interface Props {
@@ -30,7 +31,9 @@ export function TaskCard({ task, settings, today, onSaved, onClose }: Props) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState<null | 'save' | 'delete'>(null);
 
-  const isSeries = task.id.startsWith('occ:');
+  // parseOccurrenceId, а не самодельная проверка префикса: формат id
+  // вхождения — деталь lib/recurrence.ts, и у неё уже есть разборщик.
+  const isSeries = parseOccurrenceId(task.id) !== null;
 
   // «14:00–21:15 · 7 ч 15 мин» под полями ввода. Пустая строка, пока введённое
   // не складывается во что-то осмысленное, — лучше промолчать, чем показать

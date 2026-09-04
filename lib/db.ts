@@ -62,7 +62,9 @@ export async function getTasksBetween(userId: string, from: string, to: string):
   // Фильтр стоит здесь, в одной функции, а не у каждого вызывающего: через
   // неё идут оба пути к задачам расписания — экран недели (loadWeek) и
   // планировщик уведомлений (loadRange напрямую). Кому нужны задачи всех
-  // горизонтов, тот складывает списки явно; см. app/api/command/route.ts.
+  // горизонтов, тот складывает списки явно; см. app/api/command/route.ts
+  // (контекст модели для разбора фразы) и app/api/checklist/route.ts
+  // (три секции чеклиста одним ответом).
   const rows = await sql`
     select * from tasks
     where user_id = ${userId} and date >= ${from} and date <= ${to}

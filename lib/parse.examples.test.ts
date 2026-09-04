@@ -19,6 +19,7 @@ const settings: Settings = {
 
 const DOCTOR_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
 const WINDOWS_ID = 'aaaaaaaa-0000-4000-8000-000000000002';
+const CRANE_ID = 'aaaaaaaa-0000-4000-8000-000000000003';
 
 // today (2026-08-04) — вторник, поэтому понедельник её недели — 2026-08-03.
 // Задача заведена с этим якорем, как реально кладёт applyOperations, —
@@ -31,6 +32,13 @@ const tasks: Task[] = [
   },
   {
     id: WINDOWS_ID, title: 'Помыть окна', date: '2026-08-03', startMinute: null,
+    durationMinutes: null, allDay: true, categoryId: null, done: false,
+    horizon: 'week', recurrenceId: null, recurrenceDate: null,
+  },
+  // Недельная фикстура для примеров замечания 2: переход между горизонтами
+  // при правке. Дата — тот же понедельник её недели, что и у «Помыть окна».
+  {
+    id: CRANE_ID, title: 'Починить кран', date: '2026-08-03', startMinute: null,
     durationMinutes: null, allDay: true, categoryId: null, done: false,
     horizon: 'week', recurrenceId: null, recurrenceDate: null,
   },
@@ -173,6 +181,50 @@ run('parseCommand', () => {
     if (op.type === 'update') {
       expect(op.taskId).toBe(WINDOWS_ID);
       expect(op.horizon).toBeNull();
+    }
+  }, 120_000);
+
+  it('день, названный недельной задаче, переводит её в дневной горизонт', async () => {
+    // Замечание 2 финального ревью: спека обещает, что «сделаю кран в
+    // четверг» — обычная правка, которая сама переводит горизонт на
+    // дневной и ставит дату. До правки правила 8 модель отвечала бы
+    // horizon: null, и пересчёт якоря в lib/apply.ts тут же переписывал бы
+    // четверг обратно на понедельник этой недели — снаружи выглядело бы
+    // так, будто приложение ничего не сделало.
+    //
+    // today = 2026-08-04 (вторник), значит «в четверг» без уточнения —
+    // это 2026-08-06, четверг ТЕКУЩЕЙ недели задачи (её якорь 2026-08-03).
+    const result = await parseCommand(client, { ...base, text: 'почини кран в четверг в 10' });
+    expect(result.operations.length).toBe(1);
+    const op = result.operations[0];
+    expect(op.type).toBe('update');
+    if (op.type === 'update') {
+      expect(op.taskId).toBe(CRANE_ID);
+      expect(op.horizon).toBe('day');
+      expect(op.date).toBe('2026-08-06');
+      expect(op.startMinute).toBe(600);
+    }
+  }, 120_000);
+
+  it('другой период, названный недельной задаче, переводит её в этот период', async () => {
+    // Обратное направление того же перехода: «на следующий месяц» с
+    // horizon: 'month' и date: null пересчитало бы якорь от ТЕКУЩЕЙ даты
+    // задачи (2026-08-03) и оставило бы её в августе — правило 8 до
+    // правки не требовало от модели даты внутри нового периода.
+    const result = await parseCommand(client, {
+      ...base,
+      text: 'перенеси мытьё окон на следующий месяц',
+    });
+    expect(result.operations.length).toBe(1);
+    const op = result.operations[0];
+    expect(op.type).toBe('update');
+    if (op.type === 'update') {
+      expect(op.taskId).toBe(WINDOWS_ID);
+      expect(op.horizon).toBe('month');
+      // Следующий месяц от 2026-08 — сентябрь; дата вне этого диапазона
+      // означала бы, что anchorFor приведёт задачу к чужому месяцу.
+      expect(op.date).not.toBeNull();
+      expect(op.date! >= '2026-09-01' && op.date! <= '2026-09-30').toBe(true);
     }
   }, 120_000);
 });

@@ -7,6 +7,7 @@ import { Chevron } from '@/components/Chevron';
 import { CommandBar } from '@/components/CommandBar';
 import { todayIso } from '@/lib/dates';
 import { formatTimeRange } from '@/lib/format';
+import { parseOccurrenceId } from '@/lib/recurrence';
 import type { Task } from '@/lib/types';
 
 interface ChecklistData {
@@ -48,7 +49,7 @@ function Section({
             // отказывает в отметке выполнения по такому id (сначала нужно
             // отвязать вхождение правкой), поэтому вместо галочки, которая
             // гарантированно ответит 400, — обычный текст без интерактива.
-            const isSeries = task.id.startsWith('occ:');
+            const isSeries = parseOccurrenceId(task.id) !== null;
             const body = (
               <>
                 <span className="min-w-0 flex-1">
