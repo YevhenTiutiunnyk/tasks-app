@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment } from 'react';
+import { Fragment, useEffect, useRef } from 'react';
 import { useNowMinute } from '@/components/useNowMinute';
 import { eachDay, weekdayOf } from '@/lib/dates';
 import {
@@ -71,6 +71,36 @@ function NowLine({ minute }: { minute: number }) {
 
 export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
   const nowMinute = useNowMinute();
+  const todayRef = useRef<HTMLElement | null>(null);
+
+  /*
+    Открыл приложение — и сразу видишь сегодня, без прокрутки. Лента идёт
+    с понедельника, и к четвергу свой день оказывался ниже сгиба: каждый заход
+    начинался с того, что человек мотает вниз, разглядывая уже прошедшее.
+
+    Зависимости — [from, today], а НЕ список задач. Прокручиваем, когда
+    сменилась показанная неделя (стрелки, «сегодня») или наступила полночь.
+    Добавь сюда tasks — и лента дёргалась бы к сегодняшнему дню после каждой
+    надиктованной фразы, отматывая назад то, что человек в этот момент листал.
+  */
+  useEffect(() => {
+    const target = todayRef.current;
+    // Неделя без сегодняшнего дня — соседняя. Там прокручивать не к чему,
+    // и трогать позицию не за что.
+    if (!target) return;
+
+    // Высота липкой шапки замеряется, а не вписана числом: впиши — и первая
+    // же правка шапки задвинет заголовок дня под неё, причём молча.
+    const header = document.querySelector('header');
+    const offset = (header?.getBoundingClientRect().height ?? 0) + 8;
+    const top = target.getBoundingClientRect().top + window.scrollY - offset;
+
+    // Прокрутка мгновенная, без behavior: 'smooth'. Плавная при открытии
+    // читается как сбой — экран уезжает сам собой, пока человек ещё не понял,
+    // что видит.
+    window.scrollTo({ top: Math.max(0, top) });
+  }, [from, today]);
+
   const days = eachDay(from, to);
   const byDate = new Map<string, Task[]>(days.map((day) => [day, []]));
   for (const task of tasks) byDate.get(task.date)?.push(task);
@@ -103,7 +133,11 @@ export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
         let nowLinePlaced = nowMinute === null || !isToday;
 
         return (
-          <section key={row.day} className="pt-5 first:pt-0">
+          <section
+            key={row.day}
+            ref={isToday ? todayRef : undefined}
+            className="pt-5 first:pt-0"
+          >
             <div className="mb-0.5 flex items-center gap-2">
               <h2
                 className={`text-[11px] font-semibold uppercase tracking-[0.12em] ${
