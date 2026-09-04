@@ -18,12 +18,21 @@ const settings: Settings = {
 };
 
 const DOCTOR_ID = 'aaaaaaaa-0000-4000-8000-000000000001';
+const WINDOWS_ID = 'aaaaaaaa-0000-4000-8000-000000000002';
 
+// today (2026-08-04) — вторник, поэтому понедельник её недели — 2026-08-03.
+// Задача заведена с этим якорем, как реально кладёт applyOperations, —
+// иначе describeTask показал бы модели дату, которой на самом деле не бывает.
 const tasks: Task[] = [
   {
     id: DOCTOR_ID, title: 'Врач', date: '2026-08-05', startMinute: 600,
     durationMinutes: 60, allDay: false, categoryId: 'health', done: false,
     horizon: 'day', recurrenceId: null, recurrenceDate: null,
+  },
+  {
+    id: WINDOWS_ID, title: 'Помыть окна', date: '2026-08-03', startMinute: null,
+    durationMinutes: null, allDay: true, categoryId: null, done: false,
+    horizon: 'week', recurrenceId: null, recurrenceDate: null,
   },
 ];
 
@@ -100,5 +109,70 @@ run('parseCommand', () => {
     const result = await parseCommand(client, { ...base, text: 'перенеси совещание с бухгалтером на среду' });
     expect(result.operations).toEqual([]);
     expect(result.reply.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it('дело без дня, но с периодом, становится недельным', async () => {
+    const result = await parseCommand(client, { ...base, text: 'почини кран на этой неделе' });
+    expect(result.operations.length).toBe(1);
+    const op = result.operations[0];
+    expect(op.type).toBe('create');
+    if (op.type === 'create') {
+      expect(op.horizon).toBe('week');
+      // anchorFor приведёт любую дату внутри периода к понедельнику, но только
+      // если модель попала в правильную неделю. today = 2026-08-04 (вторник),
+      // значит период — 2026-08-03..2026-08-09; дата за его пределами положила
+      // бы задачу в чужой чеклист, и без этой проверки пример этого не заметил бы.
+      expect(op.date).not.toBeNull();
+      expect(op.date! >= '2026-08-03' && op.date! <= '2026-08-09').toBe(true);
+    }
+    // Времени у такой задачи нет по замыслу, и переспрашивать про него незачем.
+    expect(result.needsTime).toEqual([]);
+  }, 120_000);
+
+  it('месячный период понимается отдельно от недельного', async () => {
+    const result = await parseCommand(client, { ...base, text: 'в этом месяце сдать отчёт' });
+    expect(result.operations.length).toBe(1);
+    const op = result.operations[0];
+    expect(op.type).toBe('create');
+    if (op.type === 'create') {
+      expect(op.horizon).toBe('month');
+      expect(op.date).not.toBeNull();
+      expect(op.date! >= '2026-08-01' && op.date! <= '2026-08-31').toBe(true);
+    }
+  }, 120_000);
+
+  it('обычная фраза с днём остаётся дневной', async () => {
+    // Обратная сторона: новое правило не должно превращать в недельные
+    // задачи всё подряд. Без этого примера регресс промпта был бы незаметен.
+    const result = await parseCommand(client, { ...base, text: 'в четверг в 15 забрать посылку' });
+    expect(result.operations.length).toBe(1);
+    const op = result.operations[0];
+    expect(op.type === 'create' && (op.horizon === 'day' || op.horizon === null)).toBe(true);
+  }, 120_000);
+
+  it('удаляет существующую недельную задачу по её id', async () => {
+    // Ровно та фраза, ради которой затевался шаг 1: недельная задача не
+    // из loadRange, а из чеклиста — без объединённого контекста id
+    // не нашёлся бы, и удаление отверг бы уже наш код проверки, а не модель.
+    const result = await parseCommand(client, { ...base, text: 'убери из чеклиста мытьё окон' });
+    expect(result.operations).toEqual([{ type: 'delete', taskId: WINDOWS_ID }]);
+  }, 120_000);
+
+  it('правка недельной задачи без периода не трогает её горизонт', async () => {
+    // Регресс, который чинит замечание 1 ревью: до правки правило 8
+    // не ограничивало horizon="day" только созданием, и любая правка
+    // недельной задачи — даже простое переименование — молча вытаскивала
+    // бы её из чеклиста в дневную сетку.
+    const result = await parseCommand(client, {
+      ...base,
+      text: 'переименуй мытьё окон в мытьё окон и рам',
+    });
+    expect(result.operations.length).toBe(1);
+    const op = result.operations[0];
+    expect(op.type).toBe('update');
+    if (op.type === 'update') {
+      expect(op.taskId).toBe(WINDOWS_ID);
+      expect(op.horizon).toBeNull();
+    }
   }, 120_000);
 });

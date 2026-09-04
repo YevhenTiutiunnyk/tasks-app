@@ -58,6 +58,25 @@ vi.mock('./parse-clarify', () => ({
   },
 }));
 
+// Задача 7: роут команды теперь собирает контекст для модели из двух
+// источников — расписания (loadRange) и чеклистов (getChecklistTasks по
+// week/month). До этой подмены единственный тест роута команды упирался
+// в путь «нет ключа» и до сбора contextTasks не доходил вовсе — несущая
+// правка держалась только на чтении глазами. Настоящую модель не зовём:
+// перехватываем input.tasks и смотрим, что реально в нём оказалось.
+const parseSpy = vi.hoisted(() => ({
+  lastTasks: null as null | { title: string; horizon: string }[],
+}));
+vi.mock('./parse', () => ({
+  parseCommand: async (
+    _client: unknown,
+    input: { tasks: { title: string; horizon: string }[] },
+  ) => {
+    parseSpy.lastTasks = input.tasks;
+    return { operations: [], needsTime: [], reply: 'ZZ-ok' };
+  },
+}));
+
 // web-push реально стучится к push-серверам браузеров. В проверке
 // планировщика важно не что ответит провайдер, а КОМУ ушла отправка —
 // подменяем модуль целиком и записываем endpoint и тело каждого вызова.
@@ -1044,6 +1063,33 @@ run('изоляция по владельцу', () => {
         expect((await response.json()).code).toBe('no_key');
       } finally {
         await saveUserKey(idA, encryptApiKey(idA, 'sk-ant-zz-ключ-для-теста-владельцев'));
+      }
+    });
+
+    it('контекст роута объединяет расписание и чеклисты', async () => {
+      // Замечание ревью задачи 7: контекст собирается из loadRange и двух
+      // getChecklistTasks, но этого никто не проверял автоматически. Заводим
+      // недельную задачу и смотрим, что реально дошло до parseCommand —
+      // и дневная задача из расписания, и недельная из чеклиста, а не только
+      // то, что видно глазами в коде роута.
+      session.userId = idA;
+      const { batchId } = await applyOperations(idA, 'ZZ-контекст роута', [
+        { ...createOp('ZZ-недельная задача A', DATE), horizon: 'week' as const },
+      ]);
+      try {
+        const response = await commandPost(
+          new Request('http://localhost/api/command', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'ZZ-убери кран', today: DATE, timezone: 'Europe/Kyiv' }),
+          }),
+        );
+        expect(response.status).toBe(200);
+        const titles = parseSpy.lastTasks?.map((t) => t.title) ?? [];
+        expect(titles).toContain('ZZ-задача A');           // из loadRange
+        expect(titles).toContain('ZZ-недельная задача A'); // из getChecklistTasks
+      } finally {
+        await undoBatch(idA, batchId);
       }
     });
 
