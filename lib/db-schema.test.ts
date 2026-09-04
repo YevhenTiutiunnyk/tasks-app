@@ -34,3 +34,22 @@ run('схема: владелец обязателен', () => {
     },
   );
 });
+
+/**
+ * Та же защита от расхождения схем, что и у блока выше, но для колонки
+ * горизонта. Тест покраснеет на контейнере, собранном без миграции 0007, —
+ * то есть поймает ровно тот случай, когда тесты начинают проверять другую
+ * базу, чем та, в которой работает приложение.
+ */
+run('схема: горизонт задачи', () => {
+  it('horizon в tasks объявлен not null', async () => {
+    const [row] = await sql`
+      select is_nullable
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'tasks'
+        and column_name = 'horizon'
+    `;
+    expect(row?.is_nullable).toBe('NO');
+  });
+});
