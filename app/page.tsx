@@ -26,6 +26,31 @@ function todayIso(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * Стрелка переключения недели.
+ *
+ * Рисуется, а не набирается символом «←»: стрелочные глифы Geist тоньше
+ * соседних подписей и на бумажном фоне теряются, а толщину глифа не задать
+ * ничем. У линии же она своя — strokeWidth, и стрелка весит ровно столько,
+ * сколько нужно, в обеих темах.
+ */
+function Chevron({ direction }: { direction: 'left' | 'right' }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d={direction === 'left' ? 'M15 5 8 12l7 7' : 'M9 5l7 7-7 7'} />
+    </svg>
+  );
+}
+
 export default function Home() {
   const router = useRouter();
   const [anchor, setAnchor] = useState(todayIso);
@@ -172,7 +197,22 @@ export default function Home() {
         '2026-08-03 — 2026-08-09', и на телефоне эта строка переносилась
         на две, налезая на стрелки.
       */}
-      <header className="mb-4">
+      {/*
+        Шапка прилипает к верху. Неделя длинная: прокрутив до пятницы, человек
+        терял и дату недели, и стрелки — единственный способ уйти на соседнюю.
+        Приходилось мотать обратно вверх, и это единственное место, где
+        приложение заставляло делать лишнее движение.
+
+        Отрицательные поля гасят p-4 у <main>: без них у прилипшей полосы
+        остались бы прозрачные просветы по краям, сквозь которые виден уезжающий
+        текст. Отсюда же px-4/pt-4 — вернуть отступы внутрь.
+
+        z-[15], а не z-10: линия текущего момента в WeekGrid тоже z-10 и стоит
+        в разметке ниже, а при равном слое побеждает тот, кто ниже, — она
+        чертилась бы поверх шапки. Диалоги (z-20, z-30) обязаны остаться выше
+        шапки, поэтому и не z-20.
+      */}
+      <header className="sticky top-0 z-[15] -mx-4 -mt-4 mb-4 border-b border-hairline bg-paper/85 px-4 pb-3 pt-4 backdrop-blur">
         <div className="flex items-baseline justify-between gap-3">
           <h1 className="text-xl font-semibold tracking-[-0.02em]">
             {formatWeekRange(week.from, week.to)}
@@ -181,26 +221,46 @@ export default function Home() {
             Настройки
           </a>
         </div>
-        <div className="mt-1 flex items-center gap-1 text-[13px] text-faint">
+        {/*
+          Раньше здесь стояли три бледные надписи «← сегодня →» цветом --faint,
+          без рамки и подложки: на бумаге они читались как подпись к заголовку,
+          а не как кнопки. Признак нажимаемости был ровно один — подсветка
+          при наведении, которой на телефоне не существует, а телефон здесь
+          главное устройство.
+
+          Теперь это один сегментированный переключатель. Рамка и подложка
+          --surface говорят «на меня жмут», не вводя ни одного нового цвета:
+          «Бумага» держится на тонких линиях, и кнопка собрана из них же.
+
+          h-11 (44px) — не про красоту, а про попадание пальцем: у прежних
+          кнопок высота была около двадцати, вдвое меньше минимума, который
+          берётся с первого раза. w-11 у стрелок — тот же минимум по ширине,
+          иначе цель остаётся узкой полоской вокруг глифа.
+
+          touch-manipulation убирает задержку в 300 мс и зум по двойному
+          тапу: два быстрых нажатия на «→» — это две недели вперёд, а не
+          попытка приблизить страницу.
+        */}
+        <div className="mt-2 inline-flex touch-manipulation select-none divide-x divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface text-[13px] text-ink">
           <button
             onClick={() => setAnchor(addDays(anchor, -7))}
             aria-label="Предыдущая неделя"
-            className="rounded px-1.5 py-0.5 hover:bg-hairline hover:text-ink"
+            className="flex h-11 w-11 items-center justify-center hover:bg-hairline active:bg-hairline"
           >
-            ←
+            <Chevron direction="left" />
           </button>
           <button
             onClick={() => setAnchor(todayIso())}
-            className="rounded px-1.5 py-0.5 hover:bg-hairline hover:text-ink"
+            className="h-11 px-4 hover:bg-hairline active:bg-hairline"
           >
             сегодня
           </button>
           <button
             onClick={() => setAnchor(addDays(anchor, 7))}
             aria-label="Следующая неделя"
-            className="rounded px-1.5 py-0.5 hover:bg-hairline hover:text-ink"
+            className="flex h-11 w-11 items-center justify-center hover:bg-hairline active:bg-hairline"
           >
-            →
+            <Chevron direction="right" />
           </button>
         </div>
       </header>
