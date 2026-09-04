@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { Chevron } from '@/components/Chevron';
 import { ClarifyDialog, type ClarifyItem } from '@/components/ClarifyDialog';
 import { CommandBar, type CommandResponse } from '@/components/CommandBar';
 import { DayFeed } from '@/components/DayFeed';
@@ -26,30 +27,6 @@ function todayIso(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-/**
- * Стрелка переключения недели.
- *
- * Рисуется, а не набирается символом «←»: стрелочные глифы Geist тоньше
- * соседних подписей и на бумажном фоне теряются, а толщину глифа не задать
- * ничем. У линии же она своя — strokeWidth, и стрелка весит ровно столько,
- * сколько нужно, в обеих темах.
- */
-function Chevron({ direction }: { direction: 'left' | 'right' }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className="h-4 w-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d={direction === 'left' ? 'M15 5 8 12l7 7' : 'M9 5l7 7-7 7'} />
-    </svg>
-  );
-}
 
 export default function Home() {
   const router = useRouter();
@@ -213,14 +190,9 @@ export default function Home() {
         шапки, поэтому и не z-20.
       */}
       <header className="sticky top-0 z-[15] -mx-4 -mt-4 mb-4 border-b border-hairline bg-paper/85 px-4 pb-3 pt-4 backdrop-blur">
-        <div className="flex items-baseline justify-between gap-3">
-          <h1 className="text-xl font-semibold tracking-[-0.02em]">
-            {formatWeekRange(week.from, week.to)}
-          </h1>
-          <a href="/settings" className="shrink-0 text-[13px] text-muted hover:text-ink">
-            Настройки
-          </a>
-        </div>
+        <h1 className="text-xl font-semibold tracking-[-0.02em]">
+          {formatWeekRange(week.from, week.to)}
+        </h1>
         {/*
           Раньше здесь стояли три бледные надписи «← сегодня →» цветом --faint,
           без рамки и подложки: на бумаге они читались как подпись к заголовку,
@@ -241,27 +213,44 @@ export default function Home() {
           тапу: два быстрых нажатия на «→» — это две недели вперёд, а не
           попытка приблизить страницу.
         */}
-        <div className="mt-2 inline-flex touch-manipulation select-none divide-x divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface text-[13px] text-ink">
-          <button
-            onClick={() => setAnchor(addDays(anchor, -7))}
-            aria-label="Предыдущая неделя"
-            className="flex h-11 w-11 items-center justify-center hover:bg-hairline active:bg-hairline"
+        {/*
+          Управление собрано в один ряд под заголовком, а «Настройки» переехали
+          сюда из строки с заголовком. Две причины. Первая: рядом с кнопками
+          ссылке приходится выглядеть кнопкой, иначе она читается как случайное
+          слово между ними. Вторая: заголовок недели остался на строке один
+          и больше ни с чем не делит ширину — на узком телефоне длинный
+          «31 августа – 6 сентября» переносился на две строки именно из-за
+          соседства с «Настройками».
+        */}
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <div className="inline-flex touch-manipulation select-none divide-x divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface text-[13px] text-ink">
+            <button
+              onClick={() => setAnchor(addDays(anchor, -7))}
+              aria-label="Предыдущая неделя"
+              className="flex h-11 w-11 items-center justify-center hover:bg-hairline active:bg-hairline"
+            >
+              <Chevron direction="left" />
+            </button>
+            <button
+              onClick={() => setAnchor(todayIso())}
+              className="h-11 px-4 hover:bg-hairline active:bg-hairline"
+            >
+              сегодня
+            </button>
+            <button
+              onClick={() => setAnchor(addDays(anchor, 7))}
+              aria-label="Следующая неделя"
+              className="flex h-11 w-11 items-center justify-center hover:bg-hairline active:bg-hairline"
+            >
+              <Chevron direction="right" />
+            </button>
+          </div>
+          <a
+            href="/settings"
+            className="flex h-11 shrink-0 touch-manipulation items-center rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
           >
-            <Chevron direction="left" />
-          </button>
-          <button
-            onClick={() => setAnchor(todayIso())}
-            className="h-11 px-4 hover:bg-hairline active:bg-hairline"
-          >
-            сегодня
-          </button>
-          <button
-            onClick={() => setAnchor(addDays(anchor, 7))}
-            aria-label="Следующая неделя"
-            className="flex h-11 w-11 items-center justify-center hover:bg-hairline active:bg-hairline"
-          >
-            <Chevron direction="right" />
-          </button>
+            Настройки
+          </a>
         </div>
       </header>
 

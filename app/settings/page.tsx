@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { Chevron } from '@/components/Chevron';
 import { authClient } from '@/lib/auth-client';
 import { clockToMinutes, minutesToClock } from '@/lib/format';
 import PushToggle from '../push-toggle';
@@ -323,8 +324,24 @@ export default function SettingsPage() {
 
   return (
     <main className="mx-auto max-w-md space-y-5 p-5">
+      {/*
+        Кнопка, а не бледная ссылка. Настройки — тупик: отсюда некуда идти,
+        кроме как назад, и обратная дорога обязана быть заметной. Раньше это
+        была подпись цветом --muted высотой в строку текста; на телефоне
+        в неё попадали не с первого раза, а выглядела она как заголовок
+        рядом с настоящим заголовком.
+
+        Оформление то же, что у кнопок на главном экране: рамка --hairline,
+        подложка --surface, высота 44px. Один вид у всего, на что жмут.
+      */}
       <div className="flex items-center gap-3">
-        <Link href="/" className="text-sm text-muted">← к расписанию</Link>
+        <Link
+          href="/"
+          className="flex h-11 shrink-0 touch-manipulation items-center gap-1.5 rounded-lg border border-hairline bg-surface pl-2.5 pr-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+        >
+          <Chevron direction="left" />
+          к расписанию
+        </Link>
         <h1 className="text-lg font-semibold">Настройки</h1>
       </div>
 
