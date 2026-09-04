@@ -32,6 +32,12 @@ export function startOfWeek(iso: string): string {
   return addDays(iso, -(weekdayOf(iso) - 1));
 }
 
+export function startOfMonth(iso: string): string {
+  // Срезом, а не арифметикой в миллисекундах: строка уже в нужном виде,
+  // а любое вычитание дней здесь потребовало бы знать длину месяца.
+  return `${iso.slice(0, 7)}-01`;
+}
+
 export function weekRange(iso: string): { from: string; to: string } {
   const from = startOfWeek(iso);
   return { from, to: addDays(from, 6) };
