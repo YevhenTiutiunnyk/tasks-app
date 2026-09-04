@@ -3,6 +3,7 @@ import { isValidIsoDate } from '@/lib/dates';
 import { sql } from '@/lib/db';
 import { applyOperations } from '@/lib/apply';
 import { badRequest, readJson } from '@/lib/http';
+import type { Horizon } from '@/lib/horizons';
 import { requireUser } from '@/lib/require-user';
 import { isValidSlot, isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
@@ -56,10 +57,13 @@ export async function POST(request: Request) {
   if (!isValidSlot(body)) {
     return badRequest('Некорректное время или длительность');
   }
+  // Горизонт эта ручная форма не знает: она заводит обычную дневную задачу
+  // на выбранный день. null здесь — то же самое «период не назван», что и
+  // у модели, apply.ts трактует его как 'day'.
   const operation: Operation = {
     type: 'create', title: body.title, date: body.date, startMinute: body.startMinute,
     durationMinutes: body.durationMinutes, allDay: body.allDay,
-    categoryId: body.categoryId, recurrence: null,
+    categoryId: body.categoryId, recurrence: null, horizon: null,
   };
   return applyOrConflict(user.userId, 'создано вручную', [operation], body.today);
 }
@@ -146,6 +150,23 @@ export async function PATCH(request: Request) {
   // (replace: true). Перетаскивание знает только дату и время и флаг не
   // ставит, поэтому его сюда не пускаем.
   // При replace null значит «очистить», а не «поле не названо».
+  //
+  // Горизонт карточка не знает вовсе. Для перетаскивания (replace не стоит)
+  // null безопасен — apply.ts частичной правки его просто не тронет, как
+  // любое другое неназванное поле. Но при replace apply.ts трактует null
+  // как «день» — подставь его в лоб, и любая правка из карточки увела бы
+  // недельную или месячную задачу в дневные. Поэтому при replace читаем
+  // нынешний горизонт из базы и передаём его же: полная замена это поле
+  // не меняет. occ:-идентификатор в tasks не найдётся (это ещё не строка,
+  // а ссылка на вхождение серии) — но у вхождений горизонта не бывает,
+  // null для них и означает верное 'day'.
+  let horizon: Horizon | null = null;
+  if (replace && !occurrence) {
+    const [current] = await sql`
+      select horizon from tasks where id = ${body.taskId} and user_id = ${user.userId}
+    `;
+    horizon = (current?.horizon as Horizon | undefined) ?? null;
+  }
   const operation: Operation = {
     type: 'update',
     replace,
@@ -156,6 +177,7 @@ export async function PATCH(request: Request) {
     durationMinutes: body.durationMinutes ?? null,
     allDay: body.allDay ?? null,
     categoryId: body.categoryId ?? null,
+    horizon,
   };
   return applyOrConflict(user.userId, 'изменено вручную', [operation], body.today);
 }

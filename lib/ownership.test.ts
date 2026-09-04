@@ -645,6 +645,7 @@ run('изоляция по владельцу', () => {
       allDay: true,
       categoryId: null,
       recurrence: null,
+      horizon: null,
     };
   }
 
@@ -675,6 +676,7 @@ run('изоляция по владельцу', () => {
           allDay: false,
           categoryId: null,
           recurrence: { weekdays: [3], startsOn: FOURTH, endsOn: null },
+          horizon: null,
         },
       ]);
 
@@ -702,7 +704,7 @@ run('изоляция по владельцу', () => {
     });
 
     it('откат видит только свои пачки', async () => {
-      // У варианта create в типе Operation обязательны все семь полей —
+      // У варианта create в типе Operation обязательны все восемь полей —
       // необязательных там нет, частичный объект не скомпилируется.
       // Задача и правило в одной пачке: откат разбирает их разными ветками
       // (снимок tasks и снимок recurrences), и уцелеть должны обе.
@@ -716,6 +718,7 @@ run('изоляция по владельцу', () => {
           allDay: true,
           categoryId: null,
           recurrence: null,
+          horizon: null,
         },
         {
           type: 'create',
@@ -726,6 +729,7 @@ run('изоляция по владельцу', () => {
           allDay: false,
           categoryId: null,
           recurrence: { weekdays: [3], startsOn: FOURTH, endsOn: null },
+          horizon: null,
         },
       ]);
       // Чужой идентификатор пачки не должен откатываться под другим владельцем.
@@ -772,6 +776,7 @@ run('изоляция по владельцу', () => {
           {
             type: 'update', taskId: task.id, title: 'ZZ-угнано', date: null,
             startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+            horizon: null,
           },
         ]),
       ).rejects.toThrow();
@@ -795,6 +800,7 @@ run('изоляция по владельцу', () => {
           {
             type: 'update', taskId: `occ:${ruleA}:${THIRD}`, title: 'ZZ-угнано', date: null,
             startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+            horizon: null,
           },
         ]),
       ).rejects.toThrow();
@@ -814,6 +820,7 @@ run('изоляция по владельцу', () => {
         {
           type: 'update', taskId: `occ:${ruleA}:${THIRD}`, title: 'ZZ-своё вхождение',
           date: null, startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+          horizon: null,
         },
       ]);
       expect((await getTasksBetween(idA, THIRD, THIRD)).map((t) => t.title))
@@ -831,6 +838,7 @@ run('изоляция по владельцу', () => {
           {
             type: 'update', taskId: `occ:${ruleA}:${THIRD}`, title: 'ZZ-угнано', date: null,
             startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+            horizon: null,
           },
         ]),
       ).rejects.toThrow();

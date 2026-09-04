@@ -33,6 +33,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: 'Зал', date: '2026-08-04', startMinute: 480,
           durationMinutes: 60, allDay: false, categoryId: 'sport', recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -86,6 +87,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: 'Х', date: '2026-02-31', startMinute: null,
           durationMinutes: null, allDay: true, categoryId: null, recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -100,6 +102,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: 'Х', date: '2026-08-04', startMinute: 1500,
           durationMinutes: 60, allDay: false, categoryId: null, recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -114,6 +117,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: 'Х', date: '2026-08-04', startMinute: 480,
           durationMinutes: 0, allDay: false, categoryId: null, recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -128,6 +132,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: 'Х', date: '2026-08-04', startMinute: 480,
           durationMinutes: 60, allDay: false, categoryId: 'выдумка', recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -142,6 +147,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: '   ', date: '2026-08-04', startMinute: 480,
           durationMinutes: 60, allDay: false, categoryId: null, recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -159,6 +165,7 @@ describe('validateParseResult', () => {
         {
           type: 'create', title: 'Зал', date: null, startMinute: 480,
           durationMinutes: 60, allDay: false, categoryId: null, recurrence: null,
+          horizon: null,
         },
       ]),
       context,
@@ -174,6 +181,7 @@ describe('validateParseResult', () => {
           type: 'create', title: 'Зал', date: null, startMinute: 480,
           durationMinutes: 60, allDay: false, categoryId: null,
           recurrence: { weekdays: [2], startsOn: '2026-08-04', endsOn: null },
+          horizon: null,
         },
       ]),
       context,
@@ -190,6 +198,7 @@ describe('validateParseResult', () => {
           {
             type: 'create', title: 'Отчёт', date: '2026-08-04', startMinute: null,
             durationMinutes: null, allDay: true, categoryId: null, recurrence: null,
+            horizon: null,
           },
         ],
         [{ operationIndex: 1, question: 'Во сколько отчёт?' }],
@@ -218,6 +227,7 @@ describe('validateParseResult', () => {
           type: 'create', title: 'Зал', date: null, startMinute: 480,
           durationMinutes: 60, allDay: false, categoryId: null,
           recurrence: { weekdays: [0, 9], startsOn: '2026-08-04', endsOn: null },
+          horizon: null,
         },
       ]),
       context,
