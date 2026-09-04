@@ -23,7 +23,7 @@ const tasks: Task[] = [
   {
     id: DOCTOR_ID, title: 'Врач', date: '2026-08-05', startMinute: 600,
     durationMinutes: 60, allDay: false, categoryId: 'health', done: false,
-    recurrenceId: null, recurrenceDate: null,
+    horizon: 'day', recurrenceId: null, recurrenceDate: null,
   },
 ];
 

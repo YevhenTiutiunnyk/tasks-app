@@ -46,6 +46,10 @@ export function expandRecurrences(
         allDay: rec.allDay,
         categoryId: rec.categoryId,
         done: false,
+        // Правило повтора описывается днями недели, то есть по определению
+        // дневное. Недельных и месячных повторов не бывает, и поле здесь
+        // не выбор, а константа.
+        horizon: 'day' as const,
         recurrenceId: rec.id,
         recurrenceDate: date,
       });

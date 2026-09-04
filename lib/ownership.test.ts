@@ -478,6 +478,80 @@ run('изоляция по владельцу', () => {
     expect(await getTimezone(idA)).toBe('Asia/Tokyo');
   });
 
+  describe('горизонт: недельные и месячные задачи вне расписания', () => {
+    // Понедельник, вокруг которого крутится весь блок.
+    const MONDAY = '2030-03-04';
+
+    async function makeTask(userId: string, title: string, date: string, horizon: string) {
+      const [row] = await sql`
+        insert into tasks (title, date, all_day, horizon, user_id)
+        values (${title}, ${date}, true, ${horizon}, ${userId})
+        returning id
+      `;
+      return row.id as string;
+    }
+
+    it('недельная задача не попадает в сетку расписания', async () => {
+      const id = await makeTask(idA, 'ZZ-кран', MONDAY, 'week');
+      try {
+        const week = await loadWeek(idA, MONDAY);
+        // Якорь недельной задачи — тот самый понедельник, поэтому без фильтра
+        // она встала бы в сетку первым же днём и выглядела бы как задача,
+        // которую кто-то переставил на понедельник.
+        expect(week.tasks.map((t) => t.title)).not.toContain('ZZ-кран');
+      } finally {
+        await sql`delete from tasks where id = ${id}`;
+      }
+    });
+
+    it('месячная задача не попадает в сетку расписания', async () => {
+      const id = await makeTask(idA, 'ZZ-отчёт', '2030-03-01', 'month');
+      try {
+        const week = await loadWeek(idA, '2030-03-01');
+        expect(week.tasks.map((t) => t.title)).not.toContain('ZZ-отчёт');
+      } finally {
+        await sql`delete from tasks where id = ${id}`;
+      }
+    });
+
+    it('недельная задача не попадает в выборку для напоминаний', async () => {
+      // Отдельный тест, а не «то же самое другими словами»: планировщик
+      // ходит в loadRange напрямую, минуя loadWeek. Один тест на общую
+      // функцию доказал бы сам фильтр, но не то, что оба пути через него
+      // проходят, — а именно это здесь и проверяется.
+      const id = await makeTask(idA, 'ZZ-кран-напоминание', MONDAY, 'week');
+      try {
+        const tasks = await loadRange(idA, MONDAY, MONDAY);
+        expect(tasks.map((t) => t.title)).not.toContain('ZZ-кран-напоминание');
+      } finally {
+        await sql`delete from tasks where id = ${id}`;
+      }
+    });
+
+    it('дневная задача на том же дне по-прежнему видна', async () => {
+      // Обратная сторона: фильтр не должен вырезать вообще всё. Без этого
+      // теста реализация «отдавать пустой список» прошла бы три теста выше.
+      const id = await makeTask(idA, 'ZZ-обычная', MONDAY, 'day');
+      try {
+        const week = await loadWeek(idA, MONDAY);
+        expect(week.tasks.map((t) => t.title)).toContain('ZZ-обычная');
+      } finally {
+        await sql`delete from tasks where id = ${id}`;
+      }
+    });
+
+    it('горизонт доезжает до объекта задачи', async () => {
+      const id = await makeTask(idA, 'ZZ-горизонт', MONDAY, 'day');
+      try {
+        const week = await loadWeek(idA, MONDAY);
+        const task = week.tasks.find((t) => t.title === 'ZZ-горизонт');
+        expect(task?.horizon).toBe('day');
+      } finally {
+        await sql`delete from tasks where id = ${id}`;
+      }
+    });
+  });
+
   /** Разовая задача A из beforeAll — опора для проверок «чужое не трогается». */
   async function taskOfA() {
     const [row] = await sql`

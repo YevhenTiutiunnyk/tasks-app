@@ -14,6 +14,7 @@ const existing: Task[] = [
     allDay: false,
     categoryId: null,
     done: false,
+    horizon: 'day',
     recurrenceId: null,
     recurrenceDate: null,
   },

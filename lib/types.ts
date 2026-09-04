@@ -1,3 +1,5 @@
+import type { Horizon } from './horizons';
+
 export interface Task {
   id: string;
   title: string;
@@ -7,6 +9,8 @@ export interface Task {
   allDay: boolean;
   categoryId: string | null;
   done: boolean;
+  /** День, неделя или месяц. См. lib/horizons.ts. */
+  horizon: Horizon;
   recurrenceId: string | null;
   recurrenceDate: string | null;   // исходная дата вхождения серии
 }
