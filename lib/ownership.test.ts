@@ -3,6 +3,7 @@ import { sql } from './db';
 import {
   addSubscription,
   clearUserKey,
+  getChecklistTasks,
   getExceptions,
   getNotifiableUsers,
   getRecurrences,
@@ -546,6 +547,80 @@ run('изоляция по владельцу', () => {
         const week = await loadWeek(idA, MONDAY);
         const task = week.tasks.find((t) => t.title === 'ZZ-горизонт');
         expect(task?.horizon).toBe('day');
+      } finally {
+        await sql`delete from tasks where id = ${id}`;
+      }
+    });
+  });
+
+  describe('getChecklistTasks', () => {
+    // DATE — тот же понедельник, что и MONDAY в блоке горизонтов выше;
+    // переиспользуем константу файла вместо третьей копии той же даты.
+
+    async function makeTask(userId: string, title: string, date: string, horizon: string) {
+      const [row] = await sql`
+        insert into tasks (title, date, all_day, horizon, user_id)
+        values (${title}, ${date}, true, ${horizon}, ${userId})
+        returning id
+      `;
+      return row.id as string;
+    }
+
+    it('отдаёт задачи своего горизонта и не отдаёт чужого', async () => {
+      const week = await makeTask(idA, 'ZZ-неделя', DATE, 'week');
+      const month = await makeTask(idA, 'ZZ-месяц', '2030-03-01', 'month');
+      // Дневная задача заведена на тот же DATE, что и недельная: месячная
+      // отсекается ещё и датой (её якорь — 1 марта), а эта — только
+      // горизонтом. Без неё фильтр `horizon` можно было бы выкинуть из
+      // запроса незаметно — тест остался бы зелёным на одной дате.
+      const day = await makeTask(idA, 'ZZ-день', DATE, 'day');
+      try {
+        const titles = (await getChecklistTasks(idA, 'week', DATE)).map((t) => t.title);
+        expect(titles).toContain('ZZ-неделя');
+        expect(titles).not.toContain('ZZ-месяц');
+        expect(titles).not.toContain('ZZ-день');
+      } finally {
+        await sql`delete from tasks where id in (${week}, ${month}, ${day})`;
+      }
+    });
+
+    it('чужие задачи не попадают', async () => {
+      // Тот же рубеж, что и во всех остальных запросах после второго
+      // подпроекта: без where по владельцу сосед увидел бы чужой чеклист.
+      const mine = await makeTask(idA, 'ZZ-моё', DATE, 'week');
+      const theirs = await makeTask(idB, 'ZZ-соседа', DATE, 'week');
+      try {
+        const titles = (await getChecklistTasks(idA, 'week', DATE)).map((t) => t.title);
+        expect(titles).toContain('ZZ-моё');
+        expect(titles).not.toContain('ZZ-соседа');
+      } finally {
+        await sql`delete from tasks where id in (${mine}, ${theirs})`;
+      }
+    });
+
+    it('задача прошлой недели остаётся в своей неделе', async () => {
+      // Решение спеки «не сделал — значит не сделал» держится только этим
+      // тестом. Без него автоперенос можно было бы завести незаметно.
+      const past = await makeTask(idA, 'ZZ-прошлая', '2030-02-25', 'week');
+      try {
+        const current = (await getChecklistTasks(idA, 'week', DATE)).map((t) => t.title);
+        expect(current).not.toContain('ZZ-прошлая');
+
+        const own = (await getChecklistTasks(idA, 'week', '2030-02-25')).map((t) => t.title);
+        expect(own).toContain('ZZ-прошлая');
+      } finally {
+        await sql`delete from tasks where id = ${past}`;
+      }
+    });
+
+    it('якорь приводится к началу периода', async () => {
+      // Зовущий может передать любую дату внутри периода — например,
+      // сегодняшнюю. Без приведения запрос искал бы задачи с date = четверг
+      // и не нашёл бы ничего.
+      const id = await makeTask(idA, 'ZZ-якорь', DATE, 'week');
+      try {
+        const titles = (await getChecklistTasks(idA, 'week', '2030-03-07')).map((t) => t.title);
+        expect(titles).toContain('ZZ-якорь');
       } finally {
         await sql`delete from tasks where id = ${id}`;
       }
