@@ -15,6 +15,7 @@ const CreateOperation = z.object({
   allDay: z.boolean().nullable(),
   categoryId: z.string().nullable(),
   recurrence: RecurrenceRule.nullable(),
+  horizon: z.enum(['day', 'week', 'month']).nullable(),
 });
 
 const UpdateOperation = z.object({
@@ -26,6 +27,7 @@ const UpdateOperation = z.object({
   durationMinutes: z.number().int().nullable(),
   allDay: z.boolean().nullable(),
   categoryId: z.string().nullable(),
+  horizon: z.enum(['day', 'week', 'month']).nullable(),
 });
 
 const DeleteOperation = z.object({

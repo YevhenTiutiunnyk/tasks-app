@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { applyOperations, undoBatch } from './apply';
-import { getTasksBetween, sql } from './db';
+import { getTasksBetween, sql, toIsoDate } from './db';
 import type { Operation } from './types';
 
 const run = process.env.DATABASE_URL ? describe : describe.skip;
@@ -24,6 +24,7 @@ function create(title: string, date: string, startMinute: number | null): Operat
     type: 'create', title, date, startMinute,
     durationMinutes: startMinute === null ? null : 60,
     allDay: startMinute === null, categoryId: null, recurrence: null,
+    horizon: null,
   };
 }
 
@@ -70,6 +71,7 @@ run('applyOperations', () => {
       {
         type: 'update', taskId: task.id, title: null, date: '2030-01-11',
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null,
       },
     ]);
     const [moved] = await getTasksBetween(OWNER, FROM, TO);
@@ -92,6 +94,7 @@ run('applyOperations', () => {
         type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
         allDay: false, categoryId: null,
         recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+        horizon: null,
       },
     ]);
     const rules = await sql`select * from recurrences where starts_on = '2030-01-07'`;
@@ -107,6 +110,7 @@ run('applyOperations', () => {
         type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
         allDay: false, categoryId: null,
         recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+        horizon: null,
       },
     ]);
     const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
@@ -155,10 +159,12 @@ run('applyOperations', () => {
       {
         type: 'update', taskId: task.id, title: null, date: '2030-01-11',
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null,
       },
       {
         type: 'update', taskId: task.id, title: 'Стоматолог', date: null,
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null,
       },
     ]);
     expect(await undoBatch(OWNER, batchId)).toBe(true);
@@ -174,6 +180,7 @@ run('applyOperations', () => {
         type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
         allDay: false, categoryId: null,
         recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+        horizon: null,
       },
     ]);
     const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
@@ -182,10 +189,12 @@ run('applyOperations', () => {
       {
         type: 'update', taskId: occurrence, title: null, date: null,
         startMinute: 600, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null,
       },
       {
         type: 'update', taskId: occurrence, title: 'Бассейн', date: null,
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null,
       },
     ]);
     const tasks = await getTasksBetween(OWNER, FROM, TO);
@@ -201,6 +210,7 @@ run('applyOperations', () => {
         type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
         allDay: false, categoryId: null,
         recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+        horizon: null,
       },
     ]);
     const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
@@ -220,6 +230,7 @@ run('applyOperations', () => {
         type: 'create', title: 'Зал', date: null, startMinute: 480, durationMinutes: 60,
         allDay: false, categoryId: null,
         recurrence: { weekdays: [2], startsOn: '2030-01-07', endsOn: null },
+        horizon: null,
       },
     ]);
     const [rule] = await sql`select * from recurrences where starts_on = '2030-01-07'`;
@@ -238,6 +249,7 @@ run('applyOperations', () => {
       {
         type: 'update', taskId: occurrence, title: 'Бассейн', date: null,
         startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null,
       },
     ]);
     expect(await undoBatch(OWNER, batchId)).toBe(true);
@@ -255,7 +267,8 @@ run('applyOperations', () => {
       applyOperations(OWNER, 'сломанная пачка', [
         create('Первая', '2030-01-08', 540),
         { type: 'update', taskId: 'не-uuid-вовсе', title: 'Х', date: null,
-          startMinute: null, durationMinutes: null, allDay: null, categoryId: null },
+          startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+          horizon: null },
       ]),
     ).rejects.toThrow();
     expect(await getTasksBetween(OWNER, FROM, TO)).toHaveLength(0);
@@ -265,7 +278,7 @@ run('applyOperations', () => {
     await clean();
     await applyOperations(OWNER, 'создать', [
       { type: 'create', title: 'Врач', date: '2030-01-09', startMinute: 600, durationMinutes: 60,
-        allDay: false, categoryId: 'health', recurrence: null },
+        allDay: false, categoryId: 'health', recurrence: null, horizon: null },
     ]);
     const [task] = await getTasksBetween(OWNER, FROM, TO);
     expect(task.categoryId).toBe('health');
@@ -275,7 +288,7 @@ run('applyOperations', () => {
       {
         type: 'update', taskId: task.id, replace: true,
         title: 'Врач', date: '2030-01-09', startMinute: null, durationMinutes: null,
-        allDay: true, categoryId: null,
+        allDay: true, categoryId: null, horizon: null,
       },
     ]);
     const [updated] = await getTasksBetween(OWNER, FROM, TO);
@@ -288,17 +301,245 @@ run('applyOperations', () => {
     await clean();
     await applyOperations(OWNER, 'создать', [
       { type: 'create', title: 'Врач', date: '2030-01-09', startMinute: 600, durationMinutes: 60,
-        allDay: false, categoryId: 'health', recurrence: null },
+        allDay: false, categoryId: 'health', recurrence: null, horizon: null },
     ]);
     const [task] = await getTasksBetween(OWNER, FROM, TO);
 
     await applyOperations(OWNER, 'переименуй', [
       { type: 'update', taskId: task.id, title: 'Стоматолог', date: null,
-        startMinute: null, durationMinutes: null, allDay: null, categoryId: null },
+        startMinute: null, durationMinutes: null, allDay: null, categoryId: null,
+        horizon: null },
     ]);
     const [updated] = await getTasksBetween(OWNER, FROM, TO);
     expect(updated.title).toBe('Стоматолог');
     expect(updated.categoryId).toBe('health');   // null без replace не трогает поле
     expect(updated.startMinute).toBe(600);        // время тоже не тронуто
+  });
+
+  const THURSDAY = '2030-01-10';   // внутри FROM..TO, но не понедельник
+
+  it('создание с недельным горизонтом кладёт задачу на понедельник', async () => {
+    // Модель называет любую дату внутри периода, якорь считаем мы.
+    const { batchId } = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'create',
+        title: 'ZZ-кран',
+        date: THURSDAY,
+        startMinute: null,
+        durationMinutes: null,
+        allDay: true,
+        categoryId: null,
+        recurrence: null,
+        horizon: 'week',
+      },
+    ]);
+    try {
+      const rows = await sql`
+        select date, horizon from tasks where user_id = ${OWNER} and title = 'ZZ-кран'
+      `;
+      expect(rows.length).toBe(1);
+      expect(toIsoDate(rows[0].date)).toBe(FROM);
+      expect(rows[0].horizon).toBe('week');
+    } finally {
+      await undoBatch(OWNER, batchId);
+    }
+  });
+
+  it('без горизонта задача остаётся дневной и дата не трогается', async () => {
+    // Обратная сторона: фраза без периода обязана работать ровно как раньше.
+    // Без этого теста приведение к якорю могло бы сдвигать на понедельник
+    // вообще все задачи, и поймать это было бы нечем.
+    const { batchId } = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'create',
+        title: 'ZZ-обычная',
+        date: THURSDAY,
+        startMinute: 600,
+        durationMinutes: 60,
+        allDay: false,
+        categoryId: null,
+        recurrence: null,
+        horizon: null,
+      },
+    ]);
+    try {
+      const rows = await sql`
+        select date, horizon from tasks where user_id = ${OWNER} and title = 'ZZ-обычная'
+      `;
+      expect(toIsoDate(rows[0].date)).toBe(THURSDAY);
+      expect(rows[0].horizon).toBe('day');
+    } finally {
+      await undoBatch(OWNER, batchId);
+    }
+  });
+
+  it('месячный горизонт кладёт задачу на первое число', async () => {
+    const { batchId } = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'create',
+        title: 'ZZ-отчёт',
+        date: THURSDAY,
+        startMinute: null,
+        durationMinutes: null,
+        allDay: true,
+        categoryId: null,
+        recurrence: null,
+        horizon: 'month',
+      },
+    ]);
+    try {
+      const rows = await sql`
+        select date, horizon from tasks where user_id = ${OWNER} and title = 'ZZ-отчёт'
+      `;
+      expect(toIsoDate(rows[0].date)).toBe('2030-01-01');
+      expect(rows[0].horizon).toBe('month');
+    } finally {
+      await undoBatch(OWNER, batchId);
+      // Якорь месяца лежит вне диапазона, который чистит clean(). Отката
+      // достаточно, но подстраховка адресная и дешёвая: строка не своего
+      // диапазона переживёт прогон и станет «чужой» для предохранителя
+      // в lib/ownership.test.ts.
+      await sql`delete from tasks where user_id = ${OWNER} and title = 'ZZ-отчёт'`;
+    }
+  });
+
+  it('откат удаления возвращает недельную задачу с её горизонтом, а не дневной', async () => {
+    // Восстановление удалённой задачи — единственный путь, где строка в
+    // undoBatch заводится заново вставкой из снимка, а не update по id.
+    // Если забыть колонку horizon в списке insert, умолчание схемы
+    // подставит 'day', и вернувшаяся задача молча уедет из недельного
+    // чеклиста в сетку на понедельник.
+    const { batchId: createdBatch } = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'create',
+        title: 'ZZ-удалённая неделя',
+        date: FROM,
+        startMinute: null,
+        durationMinutes: null,
+        allDay: true,
+        categoryId: null,
+        recurrence: null,
+        horizon: 'week',
+      },
+    ]);
+    const [row] = await sql`
+      select id from tasks where user_id = ${OWNER} and title = 'ZZ-удалённая неделя'
+    `;
+    const { batchId: deleteBatch } = await applyOperations(OWNER, 'ZZ-фраза', [
+      { type: 'delete', taskId: row.id as string },
+    ]);
+    try {
+      expect(await undoBatch(OWNER, deleteBatch)).toBe(true);
+      const [restored] = await sql`select date, horizon from tasks where id = ${row.id}`;
+      expect(restored.horizon).toBe('week');
+      expect(toIsoDate(restored.date)).toBe(FROM);
+    } finally {
+      await undoBatch(OWNER, createdBatch);
+    }
+  });
+
+  it('правка переводит недельную задачу в конкретный день', async () => {
+    // «Сделаю кран в четверг» — отдельной операции для этого не нужно.
+    const created = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'create',
+        title: 'ZZ-перевод',
+        date: FROM,
+        startMinute: null,
+        durationMinutes: null,
+        allDay: true,
+        categoryId: null,
+        recurrence: null,
+        horizon: 'week',
+      },
+    ]);
+    const [row] = await sql`
+      select id from tasks where user_id = ${OWNER} and title = 'ZZ-перевод'
+    `;
+    const updated = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'update',
+        taskId: row.id as string,
+        title: null,
+        date: THURSDAY,
+        startMinute: 600,
+        durationMinutes: 60,
+        allDay: false,
+        categoryId: null,
+        horizon: 'day',
+      },
+    ]);
+    // Значения из строки после откатов читаются в переменные снаружи finally:
+    // expect внутри finally, упав, маскировал бы исходную ошибку из try, а
+    // сама очистка (оба undoBatch) обязана пройти независимо от того,
+    // что покажут проверки.
+    let restoredHorizon: string | undefined;
+    let restoredDate: Date | undefined;
+    try {
+      const [after] = await sql`select date, horizon from tasks where id = ${row.id}`;
+      // Главное утверждение: дата НЕ приведена к понедельнику, потому что
+      // горизонт после правки дневной. Считай мы якорь от прежнего горизонта —
+      // задача осталась бы на понедельнике и в чеклисте, и в сетке.
+      expect(toIsoDate(after.date)).toBe(THURSDAY);
+      expect(after.horizon).toBe('day');
+    } finally {
+      expect(await undoBatch(OWNER, updated.batchId)).toBe(true);
+      // Откат живой задачи (не удалённой) идёт через on conflict do update,
+      // а не через голую вставку выше по файлу. Без строки
+      // "horizon = excluded.horizon" в этой ветке горизонт молча застрял бы
+      // на 'day' из середины операции, а дата — на четверге: недельная
+      // задача не нашлась бы ни в чеклисте, ни (с чужим горизонтом) в сетке.
+      const [restored] = await sql`select date, horizon from tasks where id = ${row.id}`;
+      restoredHorizon = restored.horizon;
+      restoredDate = restored.date;
+      await undoBatch(OWNER, created.batchId);
+    }
+    expect(restoredHorizon).toBe('week');
+    expect(toIsoDate(restoredDate!)).toBe(FROM);
+  });
+
+  it('правка называет только горизонт — якорь пересчитывается даже без смены даты', async () => {
+    // «Сделай это на неделю» — период назван, дата нет. Пересчёт якоря
+    // только при смене даты оставил бы дату на четверге с horizon = 'week' —
+    // такая строка не находится НИ сеткой (там horizon = 'day'), НИ
+    // чеклистом (там date обязана совпасть с якорем периода). Задача
+    // исчезала бы из приложения целиком, молча.
+    const { batchId: createdBatch } = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'create',
+        title: 'ZZ-только период',
+        date: THURSDAY,
+        startMinute: 600,
+        durationMinutes: 60,
+        allDay: false,
+        categoryId: null,
+        recurrence: null,
+        horizon: null,
+      },
+    ]);
+    const [row] = await sql`
+      select id from tasks where user_id = ${OWNER} and title = 'ZZ-только период'
+    `;
+    const { batchId: updatedBatch } = await applyOperations(OWNER, 'ZZ-фраза', [
+      {
+        type: 'update',
+        taskId: row.id as string,
+        title: null,
+        date: null,
+        startMinute: null,
+        durationMinutes: null,
+        allDay: null,
+        categoryId: null,
+        horizon: 'week',
+      },
+    ]);
+    try {
+      const [after] = await sql`select date, horizon from tasks where id = ${row.id}`;
+      expect(after.horizon).toBe('week');
+      expect(toIsoDate(after.date)).toBe(FROM);
+    } finally {
+      await undoBatch(OWNER, updatedBatch);
+      await undoBatch(OWNER, createdBatch);
+    }
   });
 });

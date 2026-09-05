@@ -1,6 +1,7 @@
 import 'server-only';
 import postgres, { type TransactionSql } from 'postgres';
-import { rowToTask, sql } from './db';
+import { rowToTask, sql, toIsoDate } from './db';
+import { anchorFor, type Horizon } from './horizons';
 import { parseOccurrenceId } from './recurrence';
 import type { Operation, Task } from './types';
 
@@ -37,11 +38,16 @@ async function materializeOccurrence(
     on conflict do nothing
     returning recurrence_id
   `;
+  // horizon = 'day' — не полагаемся на умолчание колонки: миграция 0007
+  // прямо называет его временной мерой на окно между миграцией и выкладкой,
+  // а вхождение серии дневное не по умолчанию, а по определению — правило
+  // повтора описывается днями недели, недельных и месячных повторов не
+  // бывает (та же константа явно стоит в lib/recurrence.ts).
   const [row] = await tx`
     insert into tasks (title, date, start_minute, duration_minutes, all_day, category_id,
-                       recurrence_id, recurrence_date, user_id)
+                       horizon, recurrence_id, recurrence_date, user_id)
     values (${rule.title}, ${date}, ${rule.start_minute}, ${rule.duration_minutes},
-            ${rule.all_day}, ${rule.category_id}, ${recurrenceId}, ${date}, ${userId})
+            ${rule.all_day}, ${rule.category_id}, 'day', ${recurrenceId}, ${date}, ${userId})
     returning *
   `;
   return { task: rowToTask(row), exceptionCreated: exception !== undefined };
@@ -74,12 +80,17 @@ export async function applyOperations(
           `;
           snapshot.recurrences.push(row.id);
         } else {
+          // Горизонт и якорь считаем здесь, а не доверяем модели: она отдаёт
+          // период и любую дату внутри него, а понедельники и первые числа
+          // вычисляет наш проверенный код.
+          const horizon = operation.horizon ?? 'day';
           const [row] = await tx`
             insert into tasks (title, date, start_minute, duration_minutes, all_day,
-                               category_id, user_id)
-            values (${operation.title}, ${operation.date}, ${operation.startMinute},
-                    ${operation.durationMinutes}, ${operation.allDay ?? false},
-                    ${operation.categoryId}, ${userId})
+                               category_id, horizon, user_id)
+            values (${operation.title}, ${anchorFor(horizon, operation.date!)},
+                    ${operation.startMinute}, ${operation.durationMinutes},
+                    ${operation.allDay ?? false}, ${operation.categoryId},
+                    ${horizon}, ${userId})
             returning *
           `;
           snapshot.tasks.push({ id: row.id, before: null });
@@ -147,6 +158,7 @@ export async function applyOperations(
         patch.duration_minutes = operation.durationMinutes;
         patch.all_day = operation.allDay;
         patch.category_id = operation.categoryId;
+        patch.horizon = operation.horizon ?? 'day';
       } else {
         if (operation.title !== null) patch.title = operation.title;
         if (operation.date !== null) patch.date = operation.date;
@@ -154,6 +166,30 @@ export async function applyOperations(
         if (operation.durationMinutes !== null) patch.duration_minutes = operation.durationMinutes;
         if (operation.allDay !== null) patch.all_day = operation.allDay;
         if (operation.categoryId !== null) patch.category_id = operation.categoryId;
+        if (operation.horizon !== null) patch.horizon = operation.horizon;
+      }
+
+      // Дата и горизонт связаны: сменилось любое из двух — якорь надо
+      // пересчитать. Считаем от того горизонта, который будет ПОСЛЕ правки:
+      // фраза может назвать только новый период, не трогая дату
+      // («сделай это на неделю»), и наоборот («перенеси на четверг»).
+      //
+      // Условие проверяет ОБА поля, а не только дату. Пересчёт лишь при смене
+      // даты оставлял бы первый случай с горизонтом week и датой четверга —
+      // такая строка не находится НИ сеткой (там horizon = 'day'), НИ
+      // чеклистом (там date обязана совпасть с якорем периода). Задача
+      // исчезала бы из приложения целиком, молча.
+      //
+      // Прежние значения читаем отдельным запросом в той же транзакции, а не
+      // берём из снимка: выше по ветке вхождение серии могло быть только что
+      // материализовано, и в снимке у такой задачи before равен null.
+      if (typeof patch.date === 'string' || patch.horizon !== undefined) {
+        const [current] = await tx`
+          select date, horizon from tasks where id = ${taskId} and user_id = ${userId}
+        `;
+        const nextHorizon = (patch.horizon as Horizon | undefined) ?? (current.horizon as Horizon);
+        const base = typeof patch.date === 'string' ? patch.date : toIsoDate(current.date);
+        patch.date = anchorFor(nextHorizon, base);
       }
 
       await tx`update tasks set ${tx(patch)} where id = ${taskId} and user_id = ${userId}`;
@@ -214,17 +250,29 @@ export async function undoBatch(userId: string, batchId: string): Promise<boolea
       // бы ничьей — то есть невидимой и тому, кто нажал «отменить». У живой
       // строки владелец уже верный, и трогать его нечем: снимок владельца
       // не хранит.
+      // horizon — в списке колонок явно: умолчание колонки ставит 'day', а тут
+      // нужно то значение, что было у задачи до удаления или правки. Без этого
+      // откат воскресил бы недельную задачу дневной, и она молча уехала бы из
+      // чеклиста в сетку на понедельник.
+      //
+      // ?? 'day' — не про новое поведение, а про старые снимки: пачки,
+      // записанные в command_log до появления этой колонки, в своём JSON
+      // ключа horizon не несут вовсе, и entry.before.horizon там undefined.
+      // Без запасного значения это ушло бы в insert как NULL, а колонка
+      // объявлена not null — откат старой пачки на боевых данных падал бы
+      // там, где раньше срабатывало умолчание самой колонки.
       await tx`
         insert into tasks (id, title, date, start_minute, duration_minutes, all_day,
-                           category_id, done, recurrence_id, recurrence_date, user_id)
+                           category_id, done, horizon, recurrence_id, recurrence_date, user_id)
         values (${t.id}, ${t.title}, ${t.date}, ${t.startMinute}, ${t.durationMinutes},
-                ${t.allDay}, ${t.categoryId}, ${t.done}, ${t.recurrenceId},
+                ${t.allDay}, ${t.categoryId}, ${t.done}, ${t.horizon ?? 'day'}, ${t.recurrenceId},
                 ${t.recurrenceDate}, ${userId})
         on conflict (id) do update set
           title = excluded.title, date = excluded.date,
           start_minute = excluded.start_minute, duration_minutes = excluded.duration_minutes,
           all_day = excluded.all_day, category_id = excluded.category_id,
-          done = excluded.done, recurrence_id = excluded.recurrence_id,
+          done = excluded.done, horizon = excluded.horizon,
+          recurrence_id = excluded.recurrence_id,
           recurrence_date = excluded.recurrence_date, updated_at = now()
       `;
     }

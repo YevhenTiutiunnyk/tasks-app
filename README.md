@@ -75,8 +75,8 @@ property appear in `required`.
 | Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | Turn a dictated phrase into a request against the model |
 | User keys | `lib/key-client.ts`, `lib/verify-key.ts`, `lib/user-key.ts` | Build a client from the caller's own key, verify it with a real request, encrypt it at rest |
 | Data access | `lib/db.ts`, `lib/week.ts` | Queries and week assembly |
-| HTTP | `app/api/*` | Ten routes: week, command, clarify, undo, task, settings, key, push, notify, auth |
-| UI | `app/page.tsx`, `components/*` | Grid, day feed, task card, command bar |
+| HTTP | `app/api/*` | Eleven routes: week, checklist, command, clarify, undo, task, settings, key, push, notify, auth |
+| UI | `app/page.tsx`, `app/checklist/page.tsx`, `components/*` | Grid, day feed, checklist, task card, command bar |
 
 Wide screens get a week grid with an hour ruler; narrow ones get a day feed. The
 visible hour range is derived from working hours and then stretched to fit the
@@ -87,13 +87,28 @@ and returns a question. The clarification dialog takes another dictated phrase i
 the same way — *"tomorrow at 8, one hour"* — and a per-task toggle for "leave it
 as all-day".
 
+Every task has a **horizon**: day, week, or month. A task with a specific date
+("fix the printer Thursday at 10") lives in the weekly grid on that day. Tasks
+without a date — phrased as "fix the leaking tap this week" or "write the report
+this month" — are created by dictation and live on a separate **Checklist** screen
+accessed via a button in the header. These tasks don't appear in the week grid by
+design: the grid is for time-based scheduling, and horizons are for tracking
+progress within a period.
+
+Checklist tasks receive no reminders — they have no time of day. If left incomplete,
+they stay in their period; there is no auto-transfer to the next week or month.
+Incomplete means incomplete. The task's `date` column stores a period anchor —
+Monday of the week for weekly tasks, or the 1st of the month for monthly ones —
+so that a developer inspecting the database understands why a "this month" task is
+dated to the first.
+
 ---
 
 ## Tests
 
 ```bash
 npx vitest run                                                   # no database: DB-backed tests skip
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 182 passing, 7 skipped
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 268 passing, 12 skipped
 ```
 
 DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,

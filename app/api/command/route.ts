@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { addDays, isValidIsoDate, weekRange } from '@/lib/dates';
-import { getSettings, getUserKey, saveTimezone } from '@/lib/db';
+import { getChecklistTasks, getSettings, getUserKey, saveTimezone } from '@/lib/db';
 import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
@@ -35,12 +35,20 @@ export async function POST(request: Request) {
   const saveZone = zone ? saveTimezone(user.userId, zone) : Promise.resolve();
 
   // Ключ достаём в той же Promise.all — лишнего обращения к базе не появляется.
-  const [contextTasks, settings, keyRow] = await Promise.all([
+  //
+  // Модель должна видеть и то, что в сетке, и то, что в чеклистах: иначе
+  // «убери кран» не с чем сопоставить — недельные задачи из loadRange
+  // намеренно исключены, они не в расписании. Список идёт и в промпт,
+  // и в проверку идентификаторов ответа, поэтому собирается один раз.
+  const [scheduled, weekTasks, monthTasks, settings, keyRow] = await Promise.all([
     loadRange(user.userId, contextFrom, contextTo),
+    getChecklistTasks(user.userId, 'week', today),
+    getChecklistTasks(user.userId, 'month', today),
     getSettings(user.userId),
     getUserKey(user.userId),
     saveZone,
   ]);
+  const contextTasks = [...scheduled, ...weekTasks, ...monthTasks];
 
   const key = clientForUser(user.userId, keyRow);
   if (key.response) return key.response;

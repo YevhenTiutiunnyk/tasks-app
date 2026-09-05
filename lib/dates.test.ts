@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { addDays, eachDay, isValidIsoDate, startOfWeek, weekRange, weekdayOf } from './dates';
+import { addDays, eachDay, isValidIsoDate, startOfMonth, startOfWeek, weekRange, weekdayOf } from './dates';
 
 describe('addDays', () => {
   it('сдвигает внутри месяца', () => expect(addDays('2026-08-04', 3)).toBe('2026-08-07'));
@@ -44,5 +44,28 @@ describe('isValidIsoDate', () => {
     expect(isValidIsoDate('04.08.2026')).toBe(false);
     expect(isValidIsoDate('2026-8-4')).toBe(false);
     expect(isValidIsoDate('')).toBe(false);
+  });
+});
+
+describe('startOfMonth', () => {
+  it('возвращает первое число того же месяца', () => {
+    expect(startOfMonth('2026-09-17')).toBe('2026-09-01');
+  });
+
+  it('на первом числе не двигается', () => {
+    expect(startOfMonth('2026-09-01')).toBe('2026-09-01');
+  });
+
+  it('на последнем дне месяца остаётся в этом же месяце', () => {
+    // Граница, на которой ошибается наивная арифметика через вычитание дней.
+    expect(startOfMonth('2026-01-31')).toBe('2026-01-01');
+  });
+
+  it('в декабре не перепрыгивает в следующий год', () => {
+    expect(startOfMonth('2026-12-31')).toBe('2026-12-01');
+  });
+
+  it('в феврале високосного года', () => {
+    expect(startOfMonth('2028-02-29')).toBe('2028-02-01');
   });
 });

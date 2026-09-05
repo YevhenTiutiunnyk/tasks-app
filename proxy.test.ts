@@ -42,10 +42,13 @@ describe('матчер proxy', () => {
   });
 
   it('по-прежнему закрывает расписание, настройки и api', () => {
-    // Все девять роутов приложения, кроме api/notify: своей проверки сессии
-    // ни один из них не делает, и пропуск любого означал бы дыру наружу.
+    // Все роуты приложения, кроме api/notify: своей проверки сессии ни один
+    // из них не делает, и пропуск любого означал бы дыру наружу. /checklist
+    // и /api/checklist — тот же список, продолженный сюда: матчер их и так
+    // покрывает, но без строк здесь эта регрессионная сеть их не ловит.
     expect(guarded('/')).toBe(true);
     expect(guarded('/settings')).toBe(true);
+    expect(guarded('/checklist')).toBe(true);
     expect(guarded('/api/week')).toBe(true);
     expect(guarded('/api/command')).toBe(true);
     expect(guarded('/api/undo')).toBe(true);
@@ -53,6 +56,7 @@ describe('матчер proxy', () => {
     expect(guarded('/api/clarify')).toBe(true);
     expect(guarded('/api/settings')).toBe(true);
     expect(guarded('/api/push')).toBe(true);
+    expect(guarded('/api/checklist')).toBe(true);
   });
 
   it('закрывает те же пути в транспортных формах RSC', () => {

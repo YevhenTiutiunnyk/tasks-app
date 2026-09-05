@@ -1,5 +1,6 @@
 import 'server-only';
 import postgres from 'postgres';
+import { anchorFor, type Horizon } from './horizons';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import type { Category, Recurrence, RecurrenceException, Settings, Task } from './types';
 import type { SealedKey } from './user-key';
@@ -23,6 +24,7 @@ export function rowToTask(row: any): Task {
     allDay: row.all_day,
     categoryId: row.category_id,
     done: row.done,
+    horizon: row.horizon,
     recurrenceId: row.recurrence_id,
     recurrenceDate: row.recurrence_date ? toIsoDate(row.recurrence_date) : null,
   };
@@ -51,10 +53,55 @@ export async function getTasksBetween(userId: string, from: string, to: string):
   // любой правки: update пишет новую версию строки в конец. То есть задача,
   // которую подвинули или переименовали, молча переезжала бы вниз соседки
   // на то же время — и обратно после VACUUM.
+  //
+  // Только дневные задачи. У недельной и месячной колонка date заполнена
+  // якорем периода — понедельником или первым числом, — поэтому без этого
+  // условия недельная задача встала бы в сетку понедельником, а месячная
+  // первым числом, и выглядело бы это как «задача сама переехала».
+  //
+  // Фильтр стоит здесь, в одной функции, а не у каждого вызывающего: через
+  // неё идут оба пути к задачам расписания — экран недели (loadWeek) и
+  // планировщик уведомлений (loadRange напрямую). Кому нужны задачи всех
+  // горизонтов, тот складывает списки явно; см. app/api/command/route.ts
+  // (контекст модели для разбора фразы) и app/api/checklist/route.ts
+  // (три секции чеклиста одним ответом).
   const rows = await sql`
     select * from tasks
     where user_id = ${userId} and date >= ${from} and date <= ${to}
+      and horizon = 'day'
     order by date, start_minute nulls first, id
+  `;
+  return rows.map(rowToTask);
+}
+
+/**
+ * Задачи одного горизонта в одном периоде — то, что показывает чеклист.
+ *
+ * Якорь приводится здесь, а не в вызывающем: тот передаёт любую дату внутри
+ * периода (обычно сегодняшнюю), и требовать от каждого экрана самому считать
+ * понедельник значило бы завести три места, где эта арифметика может
+ * разойтись.
+ *
+ * Отдельная функция, а не параметр у getTasksBetween: там фильтр по дневному
+ * горизонту — предохранитель, и делать его необязательным значило бы вернуть
+ * ровно ту мину, ради которой он поставлен.
+ */
+export async function getChecklistTasks(
+  userId: string,
+  horizon: Horizon,
+  anchor: string,
+): Promise<Task[]> {
+  // По created_at, а не по date: внутри одного периода она у всех строк
+  // одинакова — это якорь, а не когда задача заведена, — сортировать по ней
+  // нечего. id в хвосте — тот же тай-брейк, что у соседних запросов: две
+  // задачи, заведённые одной голосовой фразой, получают близкий created_at,
+  // и без id их порядок в чеклисте дрожал бы между загрузками.
+  const rows = await sql`
+    select * from tasks
+    where user_id = ${userId}
+      and horizon = ${horizon}
+      and date = ${anchorFor(horizon, anchor)}
+    order by created_at, id
   `;
   return rows.map(rowToTask);
 }

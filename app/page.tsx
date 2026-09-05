@@ -10,7 +10,7 @@ import { DayFeed } from '@/components/DayFeed';
 import { TaskCard } from '@/components/TaskCard';
 import { UndoToast } from '@/components/UndoToast';
 import { WeekGrid } from '@/components/WeekGrid';
-import { addDays } from '@/lib/dates';
+import { addDays, todayIso } from '@/lib/dates';
 import { formatWeekRange } from '@/lib/format';
 import type { Settings, Task } from '@/lib/types';
 
@@ -20,11 +20,6 @@ interface WeekData {
   tasks: Task[];
   settings: Settings;
   hasKey: boolean;
-}
-
-function todayIso(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
 
@@ -222,7 +217,7 @@ export default function Home() {
           «31 августа – 6 сентября» переносился на две строки именно из-за
           соседства с «Настройками».
         */}
-        <div className="mt-2 flex items-center justify-between gap-3">
+        <div className="mt-2 flex items-center gap-2">
           <div className="inline-flex touch-manipulation select-none divide-x divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface text-[13px] text-ink">
             <button
               onClick={() => setAnchor(addDays(anchor, -7))}
@@ -245,6 +240,12 @@ export default function Home() {
               <Chevron direction="right" />
             </button>
           </div>
+          <a
+            href="/checklist"
+            className="flex h-11 shrink-0 touch-manipulation items-center rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+          >
+            Чеклист
+          </a>
           <a
             href="/settings"
             className="flex h-11 shrink-0 touch-manipulation items-center rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"

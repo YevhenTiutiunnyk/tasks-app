@@ -71,12 +71,21 @@ export async function POST(request: Request) {
       continue;
     }
 
+    // horizon = 'day' — уточнение по определению даёт задаче конкретный
+    // день и час, а не просто меняет поля даты/времени. Без этого недельная
+    // или месячная задача (сюда её сегодня не пускает только needsTime —
+    // список из дневного loadRange — а не проверка владения) получила бы
+    // конкретные date/start_minute при горизонте week/month: такая строка
+    // не находится НИ сеткой (там horizon='day'), НИ чеклистом (там date
+    // обязана быть якорем периода) — задача пропала бы из приложения молча,
+    // тот же инвариант, что и в правиле 8 lib/parse.ts.
     await sql`
       update tasks set
         date = ${slot.date},
         start_minute = ${slot.startMinute},
         duration_minutes = ${slot.durationMinutes},
         all_day = false,
+        horizon = 'day',
         updated_at = now()
       where id = ${answer.taskId} and user_id = ${user.userId}
     `;

@@ -1,3 +1,5 @@
+import type { Horizon } from './horizons';
+
 export interface Task {
   id: string;
   title: string;
@@ -7,6 +9,8 @@ export interface Task {
   allDay: boolean;
   categoryId: string | null;
   done: boolean;
+  /** День, неделя или месяц. См. lib/horizons.ts. */
+  horizon: Horizon;
   recurrenceId: string | null;
   recurrenceDate: string | null;   // исходная дата вхождения серии
 }
@@ -53,6 +57,8 @@ export type Operation =
       allDay: boolean | null;
       categoryId: string | null;
       recurrence: { weekdays: number[]; startsOn: string; endsOn: string | null } | null;
+      /** null означает «период не назван» и трактуется как день. */
+      horizon: Horizon | null;
     }
   | {
       type: 'update';
@@ -63,6 +69,8 @@ export type Operation =
       durationMinutes: number | null;
       allDay: boolean | null;
       categoryId: string | null;
+      /** null означает «период не назван» и трактуется как день. */
+      horizon: Horizon | null;
       /**
        * Полная замена вместо частичной правки. Для модели null означает
        * «поле не названо, не трогать», и это верно: фраза упоминает одно-два

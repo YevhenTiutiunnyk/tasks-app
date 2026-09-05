@@ -12,6 +12,7 @@ function task(overrides: Partial<Task> = {}): Task {
     allDay: false,
     categoryId: null,
     done: false,
+    horizon: 'day',
     recurrenceId: null,
     recurrenceDate: null,
     ...overrides,

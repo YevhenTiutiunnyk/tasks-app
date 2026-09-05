@@ -32,6 +32,12 @@ export function startOfWeek(iso: string): string {
   return addDays(iso, -(weekdayOf(iso) - 1));
 }
 
+export function startOfMonth(iso: string): string {
+  // Срезом, а не арифметикой в миллисекундах: строка уже в нужном виде,
+  // а любое вычитание дней здесь потребовало бы знать длину месяца.
+  return `${iso.slice(0, 7)}-01`;
+}
+
 export function weekRange(iso: string): { from: string; to: string } {
   const from = startOfWeek(iso);
   return { from, to: addDays(from, 6) };
@@ -41,4 +47,16 @@ export function eachDay(from: string, to: string): string[] {
   const days: string[] = [];
   for (let cursor = from; cursor <= to; cursor = addDays(cursor, 1)) days.push(cursor);
   return days;
+}
+
+/**
+ * Сегодняшняя дата по часам устройства.
+ *
+ * Намеренно локальная, а не UTC: человек имеет в виду свой день, а не день
+ * по Гринвичу. Единственное место во всём модуле, которое смотрит на часы,
+ * — остальное чистая арифметика строк.
+ */
+export function todayIso(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
