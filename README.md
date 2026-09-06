@@ -117,18 +117,23 @@ it opens `/report`; a task reminder's push still opens the schedule.
 
 Behind this is a snapshot, not a live comparison. Monday morning the current
 week's tasks are recorded as "planned"; a week later, right before sending, that
-same snapshot is compared against what those tasks look like by then, producing
-"done," "postponed," or "not done." A task counts as postponed only if it left
-the week entirely — moved to another week, or turned into a dateless checklist
-item — not if it merely shifted to a different hour or day within the same week.
-A week with nothing planned sends no report at all: silence, not a "0 of 0" push.
+same snapshot is compared against what those tasks look like by then, sorting
+each into one of several outcomes — done, postponed, not done, removed outright,
+added beyond the plan, or still owed to the month — any of which can show up in
+the push. A task counts as postponed only if it left the week entirely — moved
+to another week, or turned into a dateless checklist item — not if it merely
+shifted to a different hour or day within the same week. A week with nothing
+planned sends no report at all: silence, not a "0 of 0" push.
 
 This all rides on one table, `week_snapshots` (`user_id`, `week_start`), and its
-`reported_at` column: the report is only ever sent for a snapshot whose
-`reported_at` is still empty, and the column is stamped right after sending. The
-scheduler behind it is the same once-a-minute job that drives task reminders
-(`app/api/notify/route.ts`) — without that stamp it would resend the same digest
-on every one of those minutes past the delivery hour.
+`reported_at` column, stamped the moment the report is computed and saved — not
+when, or whether, a push goes out. It is set even for an empty week that
+produces no push at all, on purpose: otherwise the once-a-minute scheduler
+(`app/api/notify/route.ts`) would spend the rest of the day recomputing that
+same emptiness. It is set regardless of delivery, too — a push that fails to
+send is not retried; the report itself is still saved and stays readable on the
+`/report` screen. Either way, `reported_at` is what stops the scheduler from
+working out the same week twice.
 
 ---
 
