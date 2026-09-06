@@ -2,19 +2,26 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import webpush from 'web-push';
 import {
+  getChecklistTasks,
   getNotifiableUsers,
   getSentKeys,
   getSettings,
   getSubscriptions,
+  getTasksByIds,
+  getWeekSnapshot,
   markSent,
   purgeOldSent,
   removeSubscription,
+  saveReport,
+  saveWeekSnapshot,
 } from '@/lib/db';
 import { formatTimeRange } from '@/lib/format';
 import { nowInZone, selectDue } from '@/lib/notify';
 import { getTimezone } from '@/lib/db';
 import { addDays } from '@/lib/dates';
 import { loadRange } from '@/lib/week';
+import { runWeeklyReport } from '@/lib/report-run';
+import type { WeeklyReport } from '@/lib/report';
 import type { Task } from '@/lib/types';
 
 /**
@@ -45,6 +52,17 @@ function describe(task: Task, beforeMinutes: number): { title: string; body: str
   };
 }
 
+// Только три части и только непустые: остальное в отчёте — для экрана,
+// а в пуш идёт то, что человек хочет увидеть мельком, не открывая приложение.
+function describeReport(report: WeeklyReport): { title: string; body: string } {
+  const parts = [
+    report.done.length > 0 ? `${report.done.length} сделано` : null,
+    report.postponed.length > 0 ? `${report.postponed.length} перенесено` : null,
+    report.notDone.length > 0 ? `${report.notDone.length} не сделано` : null,
+  ].filter((part): part is string => part !== null);
+  return { title: 'Итоги недели', body: parts.join(' · ') };
+}
+
 export async function POST(request: Request) {
   if (!secretMatches(request.headers.get('x-notify-secret'))) {
     return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
@@ -63,6 +81,7 @@ export async function POST(request: Request) {
   let sentTotal = 0;
   let dueTotal = 0;
   let subscriptionsTotal = 0;
+  let reportsSentTotal = 0;
 
   for (const userId of userIds) {
     try {
@@ -89,13 +108,60 @@ export async function POST(request: Request) {
       dueTotal += due.length;
       subscriptionsTotal += subscriptions.length;
 
-      if (due.length === 0 || subscriptions.length === 0) continue;
+      // Не continue: дальше по коду ждёт отчёт за неделю, и его понедельничная
+      // проверка часа никак не связана с тем, есть ли прямо сейчас due-напоминания.
+      if (due.length > 0 && subscriptions.length > 0) {
+        const delivered: string[] = [];
 
-      const delivered: string[] = [];
+        for (const task of due) {
+          const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
+          let anyDelivered = false;
 
-      for (const task of due) {
-        const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
-        let anyDelivered = false;
+          for (const subscription of subscriptions) {
+            try {
+              await webpush.sendNotification(
+                {
+                  endpoint: subscription.endpoint,
+                  keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+                },
+                payload,
+              );
+              sentTotal += 1;
+              anyDelivered = true;
+            } catch (error) {
+              const status = (error as { statusCode?: number }).statusCode;
+              // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
+              // копятся и каждый запуск тратит время на заведомо провальные запросы.
+              if (status === 404 || status === 410) {
+                await removeSubscription(userId, subscription.endpoint);
+              } else {
+                // Только код ответа: сам объект ошибки у web-push несёт endpoint
+                // подписки, а он адрес и есть — в лог ему хода нет (пункт 6).
+                console.error('Не удалось отправить уведомление', status);
+              }
+            }
+          }
+
+          // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
+          // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
+          if (anyDelivered) delivered.push(task.id);
+        }
+
+        await markSent(delivered);
+      }
+
+      // Понедельничный отчёт: своя проверка часа внутри, вызывается на каждом
+      // прогоне, а не только когда есть due-напоминания.
+      const report = await runWeeklyReport(
+        { getWeekSnapshot, saveWeekSnapshot, saveReport, loadRange, getTasksByIds, getChecklistTasks },
+        userId,
+        today,
+        nowMinute,
+        settings.workStartMinute,
+      );
+
+      if (report) {
+        const payload = JSON.stringify({ ...describeReport(report), url: '/report', tag: 'weekly-report' });
 
         for (const subscription of subscriptions) {
           try {
@@ -106,28 +172,17 @@ export async function POST(request: Request) {
               },
               payload,
             );
-            sentTotal += 1;
-            anyDelivered = true;
+            reportsSentTotal += 1;
           } catch (error) {
             const status = (error as { statusCode?: number }).statusCode;
-            // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
-            // копятся и каждый запуск тратит время на заведомо провальные запросы.
             if (status === 404 || status === 410) {
               await removeSubscription(userId, subscription.endpoint);
             } else {
-              // Только код ответа: сам объект ошибки у web-push несёт endpoint
-              // подписки, а он адрес и есть — в лог ему хода нет (пункт 6).
-              console.error('Не удалось отправить уведомление', status);
+              console.error('Не удалось отправить итоги недели', status);
             }
           }
         }
-
-        // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
-        // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
-        if (anyDelivered) delivered.push(task.id);
       }
-
-      await markSent(delivered);
     } catch {
       // Сбой у одного не должен оставить остальных без уведомлений — поэтому
       // try/catch внутри тела цикла, а не снаружи него. Отметку при сбое
@@ -148,5 +203,10 @@ export async function POST(request: Request) {
     console.error('notify: не удалось убрать старые отметки об отправке');
   }
 
-  return NextResponse.json({ sent: sentTotal, due: dueTotal, subscriptions: subscriptionsTotal });
+  return NextResponse.json({
+    sent: sentTotal,
+    due: dueTotal,
+    subscriptions: subscriptionsTotal,
+    reportsSent: reportsSentTotal,
+  });
 }
