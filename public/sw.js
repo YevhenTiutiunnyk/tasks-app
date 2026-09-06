@@ -59,7 +59,14 @@ self.addEventListener('notificationclick', (event) => {
       // Поэтому сначала navigate, потом focus.
       for (const client of windows) {
         if ('focus' in client) {
-          if ('navigate' in client) await client.navigate(url);
+          if ('navigate' in client) {
+            try {
+              await client.navigate(url);
+            } catch {
+              // Клиент, которым не управляет этот service worker, отвергает
+              // navigate. Но поднять окно всё равно лучше, чем тап сделает пусто.
+            }
+          }
           return client.focus();
         }
       }
