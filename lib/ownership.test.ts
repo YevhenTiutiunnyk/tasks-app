@@ -27,6 +27,7 @@ import { loadRange, loadWeek } from './week';
 import { applyOperations, undoBatch } from './apply';
 import { addDays } from './dates';
 import { nowInZone } from './notify';
+import type { Task } from './types';
 
 // Владельца запроса в роутах даёт сессия better-auth. Поднимать её ради
 // проверки фильтров в SQL незачем — подменяем помощника целиком и называем
@@ -1175,6 +1176,15 @@ run('изоляция по владельцу', () => {
   });
 
   describe('изоляция чтения в роуте чеклиста', () => {
+    async function makeTask(userId: string, title: string, date: string, horizon: string) {
+      const [row] = await sql`
+        insert into tasks (title, date, all_day, horizon, user_id)
+        values (${title}, ${date}, true, ${horizon}, ${userId})
+        returning id
+      `;
+      return row.id as string;
+    }
+
     // Мелочь финального ревью: единственный роут без своего теста уровня
     // роута — у остальных они есть в блоке «изоляция записи в роутах» выше.
     it('чужие задачи не отдаются', async () => {
@@ -1203,6 +1213,27 @@ run('изоляция по владельцу', () => {
       session.userId = idA;
       const response = await checklistGet(new Request('http://t/api/checklist?date=не-дата'));
       expect(response.status).toBe(400);
+    });
+
+    it('отдаёт следующую неделю отдельно от текущей', async () => {
+      // Якорь следующей недели — понедельник через семь дней. getChecklistTasks
+      // приводит любую дату внутри периода сама, поэтому роут передаёт ей
+      // просто «сегодня плюс неделя».
+      const thisWeek = await makeTask(idA, 'ZZ-эта неделя', DATE, 'week');
+      const next = await makeTask(idA, 'ZZ-следующая неделя', addDays(DATE, 7), 'week');
+      try {
+        session.userId = idA;
+        const response = await checklistGet(
+          new Request(`http://localhost/api/checklist?date=${DATE}`),
+        );
+        const body = await response.json();
+        expect(body.week.map((t: Task) => t.title)).toEqual(['ZZ-эта неделя']);
+        expect(body.nextWeek.map((t: Task) => t.title)).toEqual(['ZZ-следующая неделя']);
+        // Секции «сегодня» больше нет вовсе — не пустой список, а отсутствие поля.
+        expect(body.today).toBeUndefined();
+      } finally {
+        await sql`delete from tasks where id in (${thisWeek}, ${next})`;
+      }
     });
   });
 

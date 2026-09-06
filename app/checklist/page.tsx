@@ -11,8 +11,8 @@ import { parseOccurrenceId } from '@/lib/recurrence';
 import type { Task } from '@/lib/types';
 
 interface ChecklistData {
-  today: Task[];
   week: Task[];
+  nextWeek: Task[];
   month: Task[];
   hasKey: boolean;
 }
@@ -109,7 +109,7 @@ function Section({
 }
 
 /**
- * Чеклист: что осталось сделать сегодня, на этой неделе и в этом месяце.
+ * Чеклист: что осталось сделать на этой неделе, на следующей и в этом месяце.
  *
  * Расписание отвечает на вопрос «когда», чеклист — «что осталось». Поэтому
  * здесь нет ни сетки, ни перетаскивания, ни листания периодов: только текущие
@@ -226,8 +226,8 @@ export default function Checklist() {
 
       {error && <p className="text-xs text-red-600">{error}</p>}
 
-      <Section title="Сегодня" tasks={data.today} busy={busy} onToggle={(t) => void toggle(t)} />
       <Section title="На этой неделе" tasks={data.week} busy={busy} onToggle={(t) => void toggle(t)} />
+      <Section title="На следующей неделе" tasks={data.nextWeek} busy={busy} onToggle={(t) => void toggle(t)} />
       <Section title="В этом месяце" tasks={data.month} busy={busy} onToggle={(t) => void toggle(t)} />
 
       {data.hasKey ? (

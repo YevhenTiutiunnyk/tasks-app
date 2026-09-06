@@ -1,16 +1,13 @@
 import { NextResponse } from 'next/server';
-import { isValidIsoDate } from '@/lib/dates';
+import { addDays, isValidIsoDate } from '@/lib/dates';
 import { getChecklistTasks, hasUserKey } from '@/lib/db';
 import { requireUser } from '@/lib/require-user';
-import { loadRange } from '@/lib/week';
 
 /**
- * Три секции чеклиста одним запросом.
- *
- * Сегодняшняя секция идёт через loadRange, а не через getChecklistTasks:
- * в ней должны быть и вхождения повторов, которые материализуются только
- * при раскрытии правил. Недельная и месячная — обычные строки, повторов
- * без дня не бывает.
+ * Чеклист — только про дела без дня, поэтому все три секции идут одним и
+ * тем же запросом по горизонту (getChecklistTasks), а раскрытие повторов
+ * здесь не нужно вовсе: правила повтора описываются днями недели и дают
+ * только дневные задачи, которых в чеклисте нет.
  */
 export async function GET(request: Request) {
   const user = await requireUser(request);
@@ -21,12 +18,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Нужен параметр date вида YYYY-MM-DD' }, { status: 400 });
   }
 
-  const [today, week, month, hasKey] = await Promise.all([
-    loadRange(user.userId, date, date),
+  const [week, nextWeek, month, hasKey] = await Promise.all([
     getChecklistTasks(user.userId, 'week', date),
+    // Якорь следующей недели: getChecklistTasks приводит любую дату внутри
+    // периода к его началу, поэтому достаточно сдвинуть на семь дней.
+    getChecklistTasks(user.userId, 'week', addDays(date, 7)),
     getChecklistTasks(user.userId, 'month', date),
     hasUserKey(user.userId),
   ]);
 
-  return NextResponse.json({ today, week, month, hasKey });
+  return NextResponse.json({ week, nextWeek, month, hasKey });
 }
