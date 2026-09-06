@@ -139,6 +139,7 @@ import { POST as undoPost } from '@/app/api/undo/route';
 import { POST as pushPost, DELETE as pushDelete } from '@/app/api/push/route';
 import { POST as notifyPost } from '@/app/api/notify/route';
 import { GET as checklistGet } from '@/app/api/checklist/route';
+import { GET as reportGet } from '@/app/api/report/route';
 
 // Тестовые пользователи заводятся в отдельной тестовой базе (TEST_DATABASE_URL,
 // см. vitest.setup.ts) — таблица "user" здесь не боевая, а поднятая
@@ -1803,6 +1804,33 @@ run('изоляция по владельцу', () => {
     it('нет отчётов — нет и последнего', async () => {
       await saveWeekSnapshot(idA, WEEK, []);
       expect(await getLatestReport(idA)).toBeNull();
+    });
+
+    // Ревью Task 6, Important 2: единственное собственное поведение
+    // app/api/report/route.ts, не покрытое тестами lib/db.ts выше, — это
+    // превращение getLatestReport()===null в 200 с пустым weekStart, а не
+    // в 404. Комментарий самого роута называет это условием первой недели
+    // пользования, которое не должно регрессировать молча.
+    it('роут отвечает 200 с пустым weekStart, а не 404, когда отчёта ещё нет', async () => {
+      session.userId = idA;
+      await saveWeekSnapshot(idA, WEEK, []);
+      const response = await reportGet(new Request('http://t/api/report'));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ weekStart: null, report: null });
+    });
+
+    it('роут отдаёт последний готовый отчёт', async () => {
+      session.userId = idA;
+      await saveWeekSnapshot(idA, WEEK, []);
+      await saveReport(idA, WEEK, {
+        done: [{ id: 'zz-1', title: 'ZZ-Кран' }],
+        notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+      });
+      const response = await reportGet(new Request('http://t/api/report'));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.weekStart).toBe(WEEK);
+      expect(body.report.done).toEqual([{ id: 'zz-1', title: 'ZZ-Кран' }]);
     });
   });
 });

@@ -187,21 +187,41 @@ export default function Checklist() {
 
   return (
     <main className="mx-auto max-w-md space-y-5 p-5 pb-28">
-      <div className="flex items-center gap-3">
-        <Link
-          href="/"
-          className="flex h-11 shrink-0 touch-manipulation items-center gap-1.5 rounded-lg border border-hairline bg-surface pl-2.5 pr-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
-        >
-          <Chevron direction="left" />
-          к расписанию
-        </Link>
+      {/*
+        Заголовок и кнопки — в двух отдельных рядах, а не в одном. Тот же
+        манёвр уже проделан на главном экране (app/page.tsx): там заголовок
+        недели делил ряд с «Настройками» и переносился на две строки на узком
+        телефоне из-за соседства. Здесь то же самое, только зримее: <h1> и обе
+        ссылки не умеют сжиматься (shrink-0 на ссылках, у <h1> вовсе нет
+        ограничения ширины), и на 375px их сумма шире доступных 335px
+        (p-5 «съедает» по 20px с каждой стороны) — вторая ссылка вставала
+        вплотную к правому краю экрана, без запаса. Раздельные ряды снимают
+        конкуренцию за ширину: у заголовка — целая строка, у кнопок — своя.
+      */}
+      <div className="space-y-2">
         <h1 className="text-lg font-semibold">Чеклист</h1>
-        <Link
-          href="/report"
-          className="ml-auto flex h-11 shrink-0 touch-manipulation items-center gap-1.5 rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
-        >
-          Итоги недели
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/"
+            className="flex h-11 shrink-0 touch-manipulation items-center gap-1.5 rounded-lg border border-hairline bg-surface pl-2.5 pr-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+          >
+            <Chevron direction="left" />
+            к расписанию
+          </Link>
+          {/*
+            Без Chevron и с симметричным px-4 (а не pl-2.5/pr-4, как у ссылки
+            выше): та асимметрия компенсирует иконку слева, здесь иконки нет —
+            ссылка ведёт вперёд, к отчёту, а не назад, и обратная стрелка была
+            бы лишней. ml-auto прижимает её к правому краю — тот же приём,
+            что и у кнопки «Отмена» в TaskCard.
+          */}
+          <Link
+            href="/report"
+            className="ml-auto flex h-11 shrink-0 touch-manipulation items-center rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+          >
+            Итоги недели
+          </Link>
+        </div>
       </div>
 
       {error && <p className="text-xs text-red-600">{error}</p>}
