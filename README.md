@@ -75,8 +75,9 @@ property appear in `required`.
 | Model calls | `lib/parse.ts`, `lib/parse-clarify.ts` | Turn a dictated phrase into a request against the model |
 | User keys | `lib/key-client.ts`, `lib/verify-key.ts`, `lib/user-key.ts` | Build a client from the caller's own key, verify it with a real request, encrypt it at rest |
 | Data access | `lib/db.ts`, `lib/week.ts` | Queries and week assembly |
-| HTTP | `app/api/*` | Eleven routes: week, checklist, command, clarify, undo, task, settings, key, push, notify, auth |
-| UI | `app/page.tsx`, `app/checklist/page.tsx`, `components/*` | Grid, day feed, checklist, task card, command bar |
+| Weekly report | `lib/report.ts`, `lib/report-run.ts` | Snapshot comparison; the Monday run for one person |
+| HTTP | `app/api/*` | Twelve routes: week, checklist, command, clarify, undo, task, settings, key, push, notify, report, auth |
+| UI | `app/page.tsx`, `app/checklist/page.tsx`, `app/report/page.tsx`, `components/*` | Grid, day feed, checklist, weekly report, task card, command bar |
 
 Wide screens get a week grid with an hour ruler; narrow ones get a day feed. The
 visible hour range is derived from working hours and then stretched to fit the
@@ -102,13 +103,40 @@ Monday of the week for weekly tasks, or the 1st of the month for monthly ones �
 so that a developer inspecting the database understands why a "this month" task is
 dated to the first.
 
+The checklist screen groups these into three sections — **"This week,"** **"Next
+week,"** **"This month"** — matching the horizons above. There is no "today"
+section: the schedule grid already answers "when", so the checklist has no reason
+to repeat it.
+
+A **"Weekly summary"** link lives in the checklist's own header and opens the
+`/report` screen — the main schedule screen simply has no room for it. Monday
+morning, at the start of that person's working hours (no separate setting — the
+same working hours the schedule itself uses), a push notification arrives with
+last week's results: how many tasks got done, postponed, or left undone. Tapping
+it opens `/report`; a task reminder's push still opens the schedule.
+
+Behind this is a snapshot, not a live comparison. Monday morning the current
+week's tasks are recorded as "planned"; a week later, right before sending, that
+same snapshot is compared against what those tasks look like by then, producing
+"done," "postponed," or "not done." A task counts as postponed only if it left
+the week entirely — moved to another week, or turned into a dateless checklist
+item — not if it merely shifted to a different hour or day within the same week.
+A week with nothing planned sends no report at all: silence, not a "0 of 0" push.
+
+This all rides on one table, `week_snapshots` (`user_id`, `week_start`), and its
+`reported_at` column: the report is only ever sent for a snapshot whose
+`reported_at` is still empty, and the column is stamped right after sending. The
+scheduler behind it is the same once-a-minute job that drives task reminders
+(`app/api/notify/route.ts`) — without that stamp it would resend the same digest
+on every one of those minutes past the delivery hour.
+
 ---
 
 ## Tests
 
 ```bash
 npx vitest run                                                   # no database: DB-backed tests skip
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 268 passing, 12 skipped
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 309 passing, 14 skipped
 ```
 
 DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
