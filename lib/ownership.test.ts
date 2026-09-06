@@ -1114,9 +1114,18 @@ run('изоляция по владельцу', () => {
       // недельную задачу и смотрим, что реально дошло до parseCommand —
       // и дневная задача из расписания, и недельная из чеклиста, а не только
       // то, что видно глазами в коде роута.
+      //
+      // Замечание ревью задачи 7 (второй заход): источников стало четыре —
+      // экран чеклиста теперь показывает и следующую неделю, а без своего
+      // запроса в контексте модель её не видит вовсе, и «убери кран» про
+      // такую задачу отвергла бы наша же проверка идентификаторов. NEXT —
+      // тот же следующий понедельник, что и DATE + 7 дней (см. объявление
+      // констант выше), поэтому задача с датой NEXT ложится ровно в тот
+      // период, который запрашивает четвёртый источник.
       session.userId = idA;
       const { batchId } = await applyOperations(idA, 'ZZ-контекст роута', [
         { ...createOp('ZZ-недельная задача A', DATE), horizon: 'week' as const },
+        { ...createOp('ZZ-недельная задача следующей недели', NEXT), horizon: 'week' as const },
       ]);
       try {
         const response = await commandPost(
@@ -1129,7 +1138,11 @@ run('изоляция по владельцу', () => {
         expect(response.status).toBe(200);
         const titles = parseSpy.lastTasks?.map((t) => t.title) ?? [];
         expect(titles).toContain('ZZ-задача A');           // из loadRange
-        expect(titles).toContain('ZZ-недельная задача A'); // из getChecklistTasks
+        expect(titles).toContain('ZZ-недельная задача A'); // из getChecklistTasks(..., 'week', today)
+        // Из getChecklistTasks(..., 'week', addDays(today, 7)) — четвёртого
+        // источника. Без него эта задача до parseCommand не дошла бы, и тест
+        // упал бы здесь же.
+        expect(titles).toContain('ZZ-недельная задача следующей недели');
       } finally {
         await undoBatch(idA, batchId);
       }
