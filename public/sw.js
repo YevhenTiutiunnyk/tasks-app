@@ -35,12 +35,17 @@ self.addEventListener('push', (event) => {
       // Уведомление про ту же задачу заменяет предыдущее, а не копится
       // второй строкой в шторке.
       tag: payload.tag,
+      // Адрес, куда вести по нажатию. Кладём в data — это единственный
+      // способ донести что-либо от обработчика push до notificationclick:
+      // между ними нет общей памяти, уведомление и есть всё состояние.
+      data: { url: payload.url || '/' },
     }),
   );
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  const url = event.notification.data?.url || '/';
 
   event.waitUntil(
     (async () => {
@@ -49,10 +54,16 @@ self.addEventListener('notificationclick', (event) => {
         includeUncontrolled: true,
       });
       // Приложение уже открыто — поднимаем его, а не плодим второе окно.
+      // Но именно поднять мало: человек, у которого на экране висит
+      // расписание, нажал на итоги недели и должен увидеть итоги недели.
+      // Поэтому сначала navigate, потом focus.
       for (const client of windows) {
-        if ('focus' in client) return client.focus();
+        if ('focus' in client) {
+          if ('navigate' in client) await client.navigate(url);
+          return client.focus();
+        }
       }
-      return self.clients.openWindow('/');
+      return self.clients.openWindow(url);
     })(),
   );
 });
