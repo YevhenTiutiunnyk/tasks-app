@@ -62,11 +62,19 @@ function describe(task: Task, beforeMinutes: number): { title: string; body: str
  * задержка, другое правило логирования) грозила разойтись между ними молча.
  * Возвращает число реально доставленных пушей: вызывающему из напоминаний
  * нужно только «дошло хоть куда-то», а отчёту — счётчик в ответ роута.
+ *
+ * `label` — не для логики, а для лога: «напоминание» или «отчёт». Логи этого
+ * проекта видны только потоком (`vercel logs --follow`), задним числом
+ * не открыть, — и до объединения двух копий этой функции сбой напоминания
+ * и сбой отчёта писали разные строки. После объединения строка стала одна
+ * на оба случая, и понедельничный сбой отчёта в логе было не отличить от
+ * рутинного сбоя напоминания.
  */
 async function sendToAll(
   userId: string,
   subscriptions: PushSubscriptionRow[],
   payload: string,
+  label: 'напоминание' | 'отчёт',
 ): Promise<number> {
   let delivered = 0;
   for (const subscription of subscriptions) {
@@ -88,7 +96,7 @@ async function sendToAll(
       } else {
         // Только код ответа: сам объект ошибки у web-push несёт endpoint
         // подписки, а он адрес и есть — в лог ему хода нет (пункт 6).
-        console.error('Не удалось отправить уведомление', status);
+        console.error(`Не удалось отправить ${label}`, status);
       }
     }
   }
@@ -140,46 +148,68 @@ export async function POST(request: Request) {
       dueTotal += due.length;
       subscriptionsTotal += subscriptions.length;
 
-      // Не continue: дальше по коду ждёт отчёт за неделю, и его понедельничная
-      // проверка часа никак не связана с тем, есть ли прямо сейчас due-напоминания.
-      if (due.length > 0 && subscriptions.length > 0) {
-        const delivered: string[] = [];
+      // Напоминания — в своей попытке. Раньше обе работы шли под одним try,
+      // и детерминированный сбой здесь — например, formatTimeRange споткнулся
+      // о задачу с испорченными полями времени — уносил с собой ещё и отчёт
+      // ниже, хотя они ничем, кроме этого try, не связаны. Отчёт сам себя
+      // лечит, стучась заново каждую минуту до местной полуночи, но только
+      // если у него есть шанс вообще запуститься.
+      try {
+        // Не continue: дальше по коду ждёт отчёт за неделю, и его понедельничная
+        // проверка часа никак не связана с тем, есть ли прямо сейчас due-напоминания.
+        if (due.length > 0 && subscriptions.length > 0) {
+          const delivered: string[] = [];
 
-        for (const task of due) {
-          const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
-          const count = await sendToAll(userId, subscriptions, payload);
-          sentTotal += count;
+          for (const task of due) {
+            const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
+            const count = await sendToAll(userId, subscriptions, payload, 'напоминание');
+            sentTotal += count;
 
-          // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
-          // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
-          if (count > 0) delivered.push(task.id);
+            // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
+            // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
+            if (count > 0) delivered.push(task.id);
+          }
+
+          await markSent(delivered);
         }
-
-        await markSent(delivered);
+      } catch {
+        // Отметку при сбое не ставим: markSent мог не успеть выполниться,
+        // а непопавшее в него напоминание безопаснее отправить повторно на
+        // следующем запуске, чем потерять навсегда. Само исключение в лог
+        // не идёт — в нём может оказаться адрес, id владельца или текст
+        // задачи (пункт 6 брифа). Стадия в сообщении — чтобы этот сбой
+        // не читался в логе (только потоком, `vercel logs --follow`) как
+        // сбой отчёта ниже.
+        console.error('notify: сбой у одного из владельцев (напоминания)');
       }
 
-      // Понедельничный отчёт: своя проверка часа внутри, вызывается на каждом
-      // прогоне, а не только когда есть due-напоминания.
-      const report = await runWeeklyReport(
-        { getWeekSnapshot, saveWeekSnapshot, saveReport, loadRange, getTasksByIds, getChecklistTasks },
-        userId,
-        today,
-        nowMinute,
-        settings.workStartMinute,
-      );
+      // Отчёт — тоже в своей попытке, зеркально: если упадёт он, уже
+      // отправленные выше напоминания терять незачем.
+      try {
+        // Понедельничный отчёт: своя проверка часа внутри, вызывается на каждом
+        // прогоне, а не только когда есть due-напоминания.
+        const report = await runWeeklyReport(
+          { getWeekSnapshot, saveWeekSnapshot, saveReport, loadRange, getTasksByIds, getChecklistTasks },
+          userId,
+          today,
+          nowMinute,
+          settings.workStartMinute,
+        );
 
-      if (report) {
-        const payload = JSON.stringify({ ...describeReport(report), url: '/report', tag: 'weekly-report' });
-        reportsSentTotal += await sendToAll(userId, subscriptions, payload);
+        if (report) {
+          const payload = JSON.stringify({ ...describeReport(report), url: '/report', tag: 'weekly-report' });
+          reportsSentTotal += await sendToAll(userId, subscriptions, payload, 'отчёт');
+        }
+      } catch {
+        console.error('notify: сбой у одного из владельцев (отчёт)');
       }
     } catch {
       // Сбой у одного не должен оставить остальных без уведомлений — поэтому
-      // try/catch внутри тела цикла, а не снаружи него. Отметку при сбое
-      // не ставим: markSent мог не успеть выполниться, а непопавшее в него
-      // напоминание безопаснее отправить повторно на следующем запуске, чем
-      // потерять навсегда. Само исключение в лог не идёт — в нём может
-      // оказаться адрес, id владельца или текст задачи (пункт 6 брифа).
-      console.error('notify: сбой у одного из владельцев');
+      // try/catch внутри тела цикла, а не снаружи него. Эта попытка — только
+      // на общую часть (настройки, часовой пояс, подписки): сбой внутри неё
+      // случается до разделения на напоминания и отчёт, так что различать
+      // стадию здесь нечем.
+      console.error('notify: сбой у одного из владельцев (настройка)');
     }
   }
 
