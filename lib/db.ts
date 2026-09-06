@@ -4,6 +4,7 @@ import { anchorFor, type Horizon } from './horizons';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
 import type { Category, Recurrence, RecurrenceException, Settings, Task } from './types';
 import type { SealedKey } from './user-key';
+import type { PlannedTask, WeeklyReport } from './report';
 
 // prepare: false — обязательно для транзакционного пулера Supabase (порт 6543).
 export const sql = postgres(process.env.DATABASE_URL!, { prepare: false });
@@ -427,4 +428,99 @@ export async function registerKeyFailure(
     returning failed_attempts, locked_until
   `;
   return { failedAttempts: row.failed_attempts, lockedUntil: row.locked_until };
+}
+
+/** Снимок недели вместе с отчётом, если он уже собран. */
+export interface WeekSnapshot {
+  weekStart: string;
+  planned: PlannedTask[];
+  report: WeeklyReport | null;
+  reportedAt: Date | null;
+}
+
+export async function getWeekSnapshot(
+  userId: string,
+  weekStart: string,
+): Promise<WeekSnapshot | null> {
+  const rows = await sql`
+    select week_start, planned, report, reported_at
+    from week_snapshots
+    where user_id = ${userId} and week_start = ${weekStart}
+  `;
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  return {
+    weekStart: toIsoDate(row.week_start),
+    planned: row.planned as PlannedTask[],
+    report: (row.report ?? null) as WeeklyReport | null,
+    reportedAt: row.reported_at as Date | null,
+  };
+}
+
+/**
+ * Последний собранный отчёт — то, что показывает экран.
+ *
+ * Условие `report is not null` обязательно: снимок текущей недели существует
+ * с понедельника, а отчёта у него не будет никогда — он про неё, а не о ней.
+ * Без условия экран пустел бы каждый понедельник, как только появится снимок
+ * новой недели.
+ */
+export async function getLatestReport(
+  userId: string,
+): Promise<{ weekStart: string; report: WeeklyReport } | null> {
+  const rows = await sql`
+    select week_start, report
+    from week_snapshots
+    where user_id = ${userId} and report is not null
+    order by week_start desc
+    limit 1
+  `;
+  if (rows.length === 0) return null;
+  return {
+    weekStart: toIsoDate(rows[0].week_start),
+    report: rows[0].report as WeeklyReport,
+  };
+}
+
+/**
+ * Записать намерение на неделю.
+ *
+ * `do nothing` при конфликте, а не `do update`: планировщик стучится раз
+ * в минуту, и второй вызов в тот же понедельник обязан быть безобидным.
+ * Перезапись превращала бы «что я собирался сделать в понедельник»
+ * в «что у меня осталось к вечеру вторника» — то есть уничтожала бы
+ * ровно то, ради чего снимок и делается.
+ */
+export async function saveWeekSnapshot(
+  userId: string,
+  weekStart: string,
+  planned: PlannedTask[],
+): Promise<void> {
+  // sql.json() требует индексную сигнатуру у объектного варианта JSONValue —
+  // PlannedTask её не объявляет. Каст через unknown, а не ослабление типа
+  // ради драйвера (см. аналогичный комментарий у saveSettings выше).
+  await sql`
+    insert into week_snapshots (user_id, week_start, planned)
+    values (${userId}, ${weekStart}, ${sql.json(planned as unknown as postgres.JSONValue)})
+    on conflict (user_id, week_start) do nothing
+  `;
+}
+
+/**
+ * Сохранить готовый отчёт и отметить, что он отправлен.
+ *
+ * Отметка и сам отчёт пишутся одной операцией намеренно: разними их —
+ * и появится состояние «отчёт есть, но считается неотправленным», в котором
+ * пуш уйдёт второй раз.
+ */
+export async function saveReport(
+  userId: string,
+  weekStart: string,
+  report: WeeklyReport,
+): Promise<void> {
+  await sql`
+    update week_snapshots
+    set report = ${sql.json(report as unknown as postgres.JSONValue)}, reported_at = now()
+    where user_id = ${userId} and week_start = ${weekStart}
+  `;
 }

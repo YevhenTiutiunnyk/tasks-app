@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from './db';
 import {
   addSubscription,
   clearUserKey,
   getChecklistTasks,
   getExceptions,
+  getLatestReport,
   getNotifiableUsers,
   getRecurrences,
   getSettings,
@@ -12,10 +13,13 @@ import {
   getTasksBetween,
   getTimezone,
   getUserKey,
+  getWeekSnapshot,
   removeSubscription,
+  saveReport,
   saveSettings,
   saveTimezone,
   saveUserKey,
+  saveWeekSnapshot,
 } from './db';
 import { decryptApiKey, encryptApiKey } from './user-key';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
@@ -209,6 +213,7 @@ async function clean() {
   // удалении "user" ниже, но чистим явно — как и остальные таблицы здесь,
   // чтобы порядок был виден и не зависел от свойств внешнего ключа.
   await sql`delete from push_subscriptions where user_id in (${idA}, ${idB}, ${idC})`;
+  await sql`delete from week_snapshots where user_id in (${idA}, ${idB}, ${idC})`;
   // По id, а не по адресу: у B в "user" адрес в смешанном регистре и не
   // совпадает с константой B, которой чистка ниже (allowed_emails) и так
   // пользуется по адресу законно — там регистр закреплён ограничением.
@@ -1737,6 +1742,67 @@ run('изоляция по владельцу', () => {
         where user_id is distinct from ${idA} and user_id is distinct from ${idB}
       `;
       expect(after.c).toBe(before.c);
+    });
+  });
+
+  describe('снимки недель', () => {
+    const WEEK = '2030-03-04';   // понедельник
+
+    afterEach(async () => {
+      await sql`delete from week_snapshots where user_id in (${idA}, ${idB})`;
+    });
+
+    it('сохраняет и читает снимок', async () => {
+      await saveWeekSnapshot(idA, WEEK, [{ id: 'zz-1', title: 'ZZ-Кран' }]);
+      const snapshot = await getWeekSnapshot(idA, WEEK);
+      expect(snapshot?.planned).toEqual([{ id: 'zz-1', title: 'ZZ-Кран' }]);
+      expect(snapshot?.reportedAt).toBeNull();
+    });
+
+    it('чужой снимок не читается', async () => {
+      // Тот же рубеж, что и во всех остальных запросах после второго
+      // подпроекта: без where по владельцу сосед увидел бы чужой отчёт.
+      await saveWeekSnapshot(idB, WEEK, [{ id: 'zz-2', title: 'ZZ-Соседа' }]);
+      expect(await getWeekSnapshot(idA, WEEK)).toBeNull();
+    });
+
+    it('повторное сохранение снимок не плодит и не затирает', async () => {
+      // Планировщик стучится раз в минуту: второй вызов в тот же понедельник
+      // обязан быть безобидным, иначе снимок «намерения» будет переписываться
+      // весь день и перестанет быть намерением.
+      await saveWeekSnapshot(idA, WEEK, [{ id: 'zz-1', title: 'ZZ-Первый' }]);
+      await saveWeekSnapshot(idA, WEEK, [{ id: 'zz-9', title: 'ZZ-Второй' }]);
+      const rows = await sql`select planned from week_snapshots where user_id = ${idA}`;
+      expect(rows.length).toBe(1);
+      expect(rows[0].planned).toEqual([{ id: 'zz-1', title: 'ZZ-Первый' }]);
+    });
+
+    it('отчёт сохраняется и проставляет отметку отправки', async () => {
+      await saveWeekSnapshot(idA, WEEK, []);
+      await saveReport(idA, WEEK, {
+        done: [{ id: 'zz-1', title: 'ZZ-Кран' }],
+        notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+      });
+      const snapshot = await getWeekSnapshot(idA, WEEK);
+      expect(snapshot?.report?.done).toEqual([{ id: 'zz-1', title: 'ZZ-Кран' }]);
+      expect(snapshot?.reportedAt).not.toBeNull();
+    });
+
+    it('последний отчёт отдаётся с указанием недели', async () => {
+      await saveWeekSnapshot(idA, '2030-02-25', []);
+      await saveReport(idA, '2030-02-25', {
+        done: [], notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+      });
+      await saveWeekSnapshot(idA, WEEK, []);   // свежая неделя, отчёта ещё нет
+      const latest = await getLatestReport(idA);
+      // Свежая неделя без отчёта не должна перебивать прошлую с отчётом:
+      // иначе экран пустел бы каждый понедельник до момента отправки.
+      expect(latest?.weekStart).toBe('2030-02-25');
+    });
+
+    it('нет отчётов — нет и последнего', async () => {
+      await saveWeekSnapshot(idA, WEEK, []);
+      expect(await getLatestReport(idA)).toBeNull();
     });
   });
 });
