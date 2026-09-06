@@ -71,3 +71,37 @@ run('схема: горизонт задачи', () => {
     expect(row?.column_default).toBe("'day'::text");
   });
 });
+
+/**
+ * Та же защита от расхождения схем, что и у блоков выше. Проверяется не
+ * наличие таблицы вообще, а обязательность владельца: именно на этом
+ * тестовая база однажды разошлась с боевой.
+ */
+run('схема: снимки недель', () => {
+  it('user_id в week_snapshots объявлен not null', async () => {
+    const [row] = await sql`
+      select is_nullable
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'week_snapshots'
+        and column_name = 'user_id'
+    `;
+    expect(row?.is_nullable).toBe('NO');
+  });
+
+  it('ключ таблицы — владелец и неделя вместе', async () => {
+    // Без этого один человек мог бы получить две строки на одну неделю,
+    // и «отчёт уже отправлен» перестало бы что-либо значить.
+    const rows = await sql`
+      select c.column_name
+      from information_schema.table_constraints t
+      join information_schema.key_column_usage c
+        on c.constraint_name = t.constraint_name
+      where t.table_schema = 'public'
+        and t.table_name = 'week_snapshots'
+        and t.constraint_type = 'PRIMARY KEY'
+      order by c.ordinal_position
+    `;
+    expect(rows.map((r) => r.column_name)).toEqual(['user_id', 'week_start']);
+  });
+});

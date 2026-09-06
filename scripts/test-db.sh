@@ -93,6 +93,9 @@ psql_exec < "$MIGRATIONS_DIR/0006_ownership_not_null.sql"
 echo "== Миграция 0007 =="
 psql_exec < "$MIGRATIONS_DIR/0007_task_horizons.sql"
 
+echo "== Миграция 0008 =="
+psql_exec < "$MIGRATIONS_DIR/0008_week_snapshots.sql"
+
 tables=$(docker exec "$CONTAINER" psql -U "$PGUSER" -d "$DB" -tAc \
   "select count(*) from information_schema.tables where table_schema = 'public'")
 echo "== Готово: таблиц в public — $tables =="
