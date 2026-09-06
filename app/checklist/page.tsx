@@ -196,6 +196,12 @@ export default function Checklist() {
           к расписанию
         </Link>
         <h1 className="text-lg font-semibold">Чеклист</h1>
+        <Link
+          href="/report"
+          className="ml-auto flex h-11 shrink-0 touch-manipulation items-center gap-1.5 rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+        >
+          Итоги недели
+        </Link>
       </div>
 
       {error && <p className="text-xs text-red-600">{error}</p>}
