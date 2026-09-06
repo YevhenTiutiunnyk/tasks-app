@@ -122,8 +122,11 @@ each into one of several outcomes — done, postponed, not done, removed outrigh
 added beyond the plan, or still owed to the month — any of which can show up in
 the push. A task counts as postponed only if it left the week entirely — moved
 to another week, or turned into a dateless checklist item — not if it merely
-shifted to a different hour or day within the same week. A week with nothing
-planned sends no report at all: silence, not a "0 of 0" push.
+shifted to a different hour or day within the same week. No report is sent at
+all only when all six lists come back empty — done, postponed, not done,
+removed, added beyond the plan, still owed to the month — silence, not a
+"0 of 0" push. A week with nothing planned still sends one if something got
+done beyond the plan anyway, or the month list simply isn't empty.
 
 This all rides on one table, `week_snapshots` (`user_id`, `week_start`), and its
 `reported_at` column, stamped the moment the report is computed and saved — not
@@ -141,7 +144,7 @@ working out the same week twice.
 
 ```bash
 npx vitest run                                                   # no database: DB-backed tests skip
-node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 309 passing, 14 skipped
+node --env-file=.env.local ./node_modules/vitest/vitest.mjs run   # everything: 312 passing, 14 skipped
 ```
 
 DB-backed tests (`lib/db.test.ts`, `lib/apply.test.ts`, `lib/ownership.test.ts`,
@@ -257,7 +260,11 @@ the migration has to come after the first login, not before it.
    while it was still deployed. A fresh database has neither of those, which is
    why `scripts/test-db.sh` also replays phase 1 only.
 
-7. Reload the app — the schedule works, and everything you create from now on
+7. Apply the remaining migrations in order: `0005_user_keys.sql`,
+   `0006_ownership_not_null.sql`, `0007_task_horizons.sql`,
+   `0008_week_snapshots.sql`. None of them carry `0004`'s preconditions.
+
+8. Reload the app — the schedule works, and everything you create from now on
    belongs to your user.
 
 | Variable | What it is |
