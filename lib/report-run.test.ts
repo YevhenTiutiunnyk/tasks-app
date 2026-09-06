@@ -16,7 +16,7 @@ function deps(over: Partial<ReportDeps> = {}): ReportDeps {
   return {
     getWeekSnapshot: async () => null,
     saveWeekSnapshot: async () => {},
-    saveReport: async () => {},
+    saveReport: async () => true,
     loadRange: async () => [],
     getTasksByIds: async () => [],
     getChecklistTasks: async () => [],
@@ -75,7 +75,7 @@ describe('runWeeklyReport', () => {
   });
 
   it('собирает отчёт, сохраняет его и возвращает для отправки', async () => {
-    const saveReport = vi.fn();
+    const saveReport = vi.fn(async () => true);
     const report = await runWeeklyReport(
       deps({
         getWeekSnapshot: async (_u, week) =>
@@ -94,7 +94,7 @@ describe('runWeeklyReport', () => {
   it('пустой отчёт отмечается отправленным, но не возвращается', async () => {
     // Иначе запуск раз в минуту будет вычислять ту же пустоту весь
     // понедельник, а пуша всё равно не будет.
-    const saveReport = vi.fn();
+    const saveReport = vi.fn(async () => true);
     const report = await runWeeklyReport(
       deps({
         getWeekSnapshot: async (_u, week) =>
@@ -105,6 +105,28 @@ describe('runWeeklyReport', () => {
     );
     expect(report).toBeNull();
     expect(saveReport).toHaveBeenCalled();
+  });
+
+  it('проигравший гонку двух запусков планировщика ничего не отправляет', async () => {
+    // saveReport пишет только когда reported_at ещё null (предикат в самом
+    // UPDATE) и возвращает, записала ли именно эта попытка. Два пересёкшихся
+    // запуска /api/notify оба могут дойти сюда с непустым отчётом, но только
+    // один из них реально запишет строку — второй обязан промолчать, а не
+    // продублировать пуш поверх того, что уже ушёл от победителя.
+    const saveReport = vi.fn(async () => false);
+    const report = await runWeeklyReport(
+      deps({
+        getWeekSnapshot: async (_u, week) =>
+          week === PREV
+            ? { weekStart: PREV, planned: [{ id: 'a', title: 'Кран' }], report: null, reportedAt: null }
+            : null,
+        getTasksByIds: async () => [task('a', 'Кран', PREV, true)],
+        saveReport,
+      }),
+      'u', MONDAY, 600, 540,
+    );
+    expect(saveReport).toHaveBeenCalled();
+    expect(report).toBeNull();
   });
 
   it('снимок новой недели создаётся, даже если сборка отчёта упала', async () => {

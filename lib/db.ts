@@ -533,15 +533,30 @@ export async function saveWeekSnapshot(
  * Отметка и сам отчёт пишутся одной операцией намеренно: разними их —
  * и появится состояние «отчёт есть, но считается неотправленным», в котором
  * пуш уйдёт второй раз.
+ *
+ * `and reported_at is null` в предикате — не оптимизация, а сама защита от
+ * дубля. Без неё два пересёкшихся запуска /api/notify (соседние минуты
+ * планировщика, наложившиеся из-за задержки) оба читают reportedAt === null
+ * ДО того, как кто-то из них запишет своё, и оба решают, что отправлять
+ * можно. Общий tag 'weekly-report' схлопывает такой дубль в шторке
+ * уведомлений, но это везение получателя, а не гарантия. С предикатом
+ * «уже отмечен отправленным» проверяется той же командой, что делает
+ * отметку, — атомарно на стороне базы, — и обновляет ровно ту строку,
+ * которая всё ещё null, тем же приёмом, что и `on conflict do nothing`
+ * у saveWeekSnapshot «на случай гонки двух запусков планировщика».
+ * Возвращает, действительно ли эта попытка записала данные: тому, кто
+ * проиграл гонку, отправлять уже нечего — за него это уже сделал победитель.
  */
 export async function saveReport(
   userId: string,
   weekStart: string,
   report: WeeklyReport,
-): Promise<void> {
-  await sql`
+): Promise<boolean> {
+  const rows = await sql`
     update week_snapshots
     set report = ${sql.json(report as unknown as postgres.JSONValue)}, reported_at = now()
-    where user_id = ${userId} and week_start = ${weekStart}
+    where user_id = ${userId} and week_start = ${weekStart} and reported_at is null
+    returning user_id
   `;
+  return rows.length > 0;
 }

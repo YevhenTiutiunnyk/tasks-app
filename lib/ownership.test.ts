@@ -1476,6 +1476,19 @@ run('изоляция по владельцу', () => {
   });
 
   describe('изоляция в планировщике уведомлений', () => {
+    // notifyPost здесь идёт по настоящим часам (nowInZone('UTC') без
+    // подмены), и тест «часовой пояс» вдобавок пинит владельца B на
+    // 2030-07-01 — понедельник. По любым понедельникам после 09:00 UTC,
+    // и всегда для B, notifyPost доходит до runWeeklyReport и в его finally
+    // пишет настоящую строку week_snapshots как побочный эффект теста,
+    // который вообще-то про напоминания. Раньше это молча подчищалось
+    // afterEach двух ДРУГИХ describe-блоков, шедших следом по одной и той
+    // же базе, — уборка адресуется собственными идентификаторами этого
+    // блока, а не общим delete.
+    afterEach(async () => {
+      await sql`delete from week_snapshots where user_id in (${idA}, ${idB})`;
+    });
+
     async function insertDueTask(userId: string, title: string, date: string, startMinute: number) {
       const [row] = await sql`
         insert into tasks (title, date, start_minute, duration_minutes, all_day, user_id)
@@ -1824,13 +1837,36 @@ run('изоляция по владельцу', () => {
 
     it('отчёт сохраняется и проставляет отметку отправки', async () => {
       await saveWeekSnapshot(idA, WEEK, []);
-      await saveReport(idA, WEEK, {
+      const wrote = await saveReport(idA, WEEK, {
         done: [{ id: 'zz-1', title: 'ZZ-Кран' }],
         notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
       });
+      expect(wrote).toBe(true);
       const snapshot = await getWeekSnapshot(idA, WEEK);
       expect(snapshot?.report?.done).toEqual([{ id: 'zz-1', title: 'ZZ-Кран' }]);
       expect(snapshot?.reportedAt).not.toBeNull();
+    });
+
+    it('второй saveReport на ту же неделю не пишет и честно отвечает false', async () => {
+      // Предикат `reported_at is null` в самом UPDATE — защита от гонки двух
+      // пересёкшихся запусков планировщика: тот, что дошёл вторым, обязан
+      // получить отказ от базы, а не молча перезаписать уже отправленный
+      // отчёт. Здесь та же гонка не нужна: последовательные вызовы проверяют
+      // именно предикат, а не тайминг.
+      await saveWeekSnapshot(idA, WEEK, []);
+      const first = await saveReport(idA, WEEK, {
+        done: [{ id: 'zz-1', title: 'ZZ-Победитель' }],
+        notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+      });
+      const second = await saveReport(idA, WEEK, {
+        done: [{ id: 'zz-2', title: 'ZZ-Проигравший' }],
+        notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+      });
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+      // Строка осталась той, что записал первый вызов — второй не затёр её.
+      const snapshot = await getWeekSnapshot(idA, WEEK);
+      expect(snapshot?.report?.done).toEqual([{ id: 'zz-1', title: 'ZZ-Победитель' }]);
     });
 
     it('последний отчёт отдаётся с указанием недели', async () => {

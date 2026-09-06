@@ -23,7 +23,7 @@ import type { Task } from './types';
 export interface ReportDeps {
   getWeekSnapshot(userId: string, weekStart: string): Promise<WeekSnapshot | null>;
   saveWeekSnapshot(userId: string, weekStart: string, planned: PlannedTask[]): Promise<void>;
-  saveReport(userId: string, weekStart: string, report: WeeklyReport): Promise<void>;
+  saveReport(userId: string, weekStart: string, report: WeeklyReport): Promise<boolean>;
   loadRange(userId: string, from: string, to: string): Promise<Task[]>;
   getTasksByIds(userId: string, ids: string[]): Promise<Task[]>;
   getChecklistTasks(userId: string, horizon: Horizon, anchor: string): Promise<Task[]>;
@@ -106,8 +106,15 @@ export async function runWeeklyReport(
 
       // Сохраняем всегда, даже пустой: иначе запуск раз в минуту будет
       // вычислять ту же пустоту весь понедельник.
-      await deps.saveReport(userId, prevWeek, report);
-      if (!isReportEmpty(report)) toSend = report;
+      //
+      // saveReport возвращает, действительно ли эта попытка записала данные:
+      // предикат `reported_at is null` внутри неё делает «отправлен ровно
+      // один раз» гарантией базы, а не тем, что два пересёкшихся запуска
+      // планировщика оба увидели null и оба решили слать. Проигравший
+      // получает wrote === false и не отправляет ничего — за него это уже
+      // сделал победитель гонки.
+      const wrote = await deps.saveReport(userId, prevWeek, report);
+      if (wrote && !isReportEmpty(report)) toSend = report;
     }
   } finally {
     // Снимок новой недели — в finally: беда с прошлой неделей не должна
