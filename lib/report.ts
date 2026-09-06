@@ -110,3 +110,28 @@ export function isReportEmpty(report: WeeklyReport): boolean {
     report.monthLeft.length === 0
   );
 }
+
+/**
+ * Текст пуша с итогами недели: только непустые части, через « · ».
+ *
+ * Список частей здесь обязан покрывать те же шесть полей, что и
+ * isReportEmpty. Раньше в пуш шли только done/postponed/notDone — и неделя,
+ * где единственным содержанием была removed (задачу из снимка удалили) или
+ * monthLeft (в месячном списке ещё есть дела), проходила проверку
+ * isReportEmpty как непустая, но получала пустое тело пуша. К тому моменту
+ * saveReport уже проставил reported_at — второго шанса на этот отчёт нет,
+ * человек молча остаётся без него на всю неделю. Поэтому здесь те же шесть
+ * полей, что и в isReportEmpty: непустой по isReportEmpty отчёт обязан дать
+ * непустое тело.
+ */
+export function describeReport(report: WeeklyReport): { title: string; body: string } {
+  const parts = [
+    report.done.length > 0 ? `${report.done.length} сделано` : null,
+    report.postponed.length > 0 ? `${report.postponed.length} перенесено` : null,
+    report.notDone.length > 0 ? `${report.notDone.length} не сделано` : null,
+    report.removed.length > 0 ? `${report.removed.length} убрано` : null,
+    report.extra.length > 0 ? `${report.extra.length} сверх плана` : null,
+    report.monthLeft.length > 0 ? `${report.monthLeft.length} осталось на месяц` : null,
+  ].filter((part): part is string => part !== null);
+  return { title: 'Итоги недели', body: parts.join(' · ') };
+}

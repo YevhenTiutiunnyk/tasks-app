@@ -14,6 +14,7 @@ import {
   removeSubscription,
   saveReport,
   saveWeekSnapshot,
+  type PushSubscriptionRow,
 } from '@/lib/db';
 import { formatTimeRange } from '@/lib/format';
 import { nowInZone, selectDue } from '@/lib/notify';
@@ -21,7 +22,7 @@ import { getTimezone } from '@/lib/db';
 import { addDays } from '@/lib/dates';
 import { loadRange } from '@/lib/week';
 import { runWeeklyReport } from '@/lib/report-run';
-import type { WeeklyReport } from '@/lib/report';
+import { describeReport } from '@/lib/report';
 import type { Task } from '@/lib/types';
 
 /**
@@ -52,15 +53,46 @@ function describe(task: Task, beforeMinutes: number): { title: string; body: str
   };
 }
 
-// Только три части и только непустые: остальное в отчёте — для экрана,
-// а в пуш идёт то, что человек хочет увидеть мельком, не открывая приложение.
-function describeReport(report: WeeklyReport): { title: string; body: string } {
-  const parts = [
-    report.done.length > 0 ? `${report.done.length} сделано` : null,
-    report.postponed.length > 0 ? `${report.postponed.length} перенесено` : null,
-    report.notDone.length > 0 ? `${report.notDone.length} не сделано` : null,
-  ].filter((part): part is string => part !== null);
-  return { title: 'Итоги недели', body: parts.join(' · ') };
+/**
+ * Разослать один пуш по всем подпискам владельца.
+ *
+ * Напоминания и отчёт шлют один и тот же payload по одному и тому же набору
+ * подписок с одной и той же политикой мёртвых подписок — раньше это было
+ * два места с одинаковым кодом, и любая правка политики (новый статус,
+ * задержка, другое правило логирования) грозила разойтись между ними молча.
+ * Возвращает число реально доставленных пушей: вызывающему из напоминаний
+ * нужно только «дошло хоть куда-то», а отчёту — счётчик в ответ роута.
+ */
+async function sendToAll(
+  userId: string,
+  subscriptions: PushSubscriptionRow[],
+  payload: string,
+): Promise<number> {
+  let delivered = 0;
+  for (const subscription of subscriptions) {
+    try {
+      await webpush.sendNotification(
+        {
+          endpoint: subscription.endpoint,
+          keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+        },
+        payload,
+      );
+      delivered += 1;
+    } catch (error) {
+      const status = (error as { statusCode?: number }).statusCode;
+      // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
+      // копятся и каждый запуск тратит время на заведомо провальные запросы.
+      if (status === 404 || status === 410) {
+        await removeSubscription(userId, subscription.endpoint);
+      } else {
+        // Только код ответа: сам объект ошибки у web-push несёт endpoint
+        // подписки, а он адрес и есть — в лог ему хода нет (пункт 6).
+        console.error('Не удалось отправить уведомление', status);
+      }
+    }
+  }
+  return delivered;
 }
 
 export async function POST(request: Request) {
@@ -115,36 +147,12 @@ export async function POST(request: Request) {
 
         for (const task of due) {
           const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
-          let anyDelivered = false;
-
-          for (const subscription of subscriptions) {
-            try {
-              await webpush.sendNotification(
-                {
-                  endpoint: subscription.endpoint,
-                  keys: { p256dh: subscription.p256dh, auth: subscription.auth },
-                },
-                payload,
-              );
-              sentTotal += 1;
-              anyDelivered = true;
-            } catch (error) {
-              const status = (error as { statusCode?: number }).statusCode;
-              // 404 и 410 означают, что подписки больше нет. Иначе мёртвые строки
-              // копятся и каждый запуск тратит время на заведомо провальные запросы.
-              if (status === 404 || status === 410) {
-                await removeSubscription(userId, subscription.endpoint);
-              } else {
-                // Только код ответа: сам объект ошибки у web-push несёт endpoint
-                // подписки, а он адрес и есть — в лог ему хода нет (пункт 6).
-                console.error('Не удалось отправить уведомление', status);
-              }
-            }
-          }
+          const count = await sendToAll(userId, subscriptions, payload);
+          sentTotal += count;
 
           // Отметку ставим, только если уведомление куда-то дошло. Иначе временный
           // сбой сети навсегда съел бы напоминание: ключ записан, повтора не будет.
-          if (anyDelivered) delivered.push(task.id);
+          if (count > 0) delivered.push(task.id);
         }
 
         await markSent(delivered);
@@ -162,26 +170,7 @@ export async function POST(request: Request) {
 
       if (report) {
         const payload = JSON.stringify({ ...describeReport(report), url: '/report', tag: 'weekly-report' });
-
-        for (const subscription of subscriptions) {
-          try {
-            await webpush.sendNotification(
-              {
-                endpoint: subscription.endpoint,
-                keys: { p256dh: subscription.p256dh, auth: subscription.auth },
-              },
-              payload,
-            );
-            reportsSentTotal += 1;
-          } catch (error) {
-            const status = (error as { statusCode?: number }).statusCode;
-            if (status === 404 || status === 410) {
-              await removeSubscription(userId, subscription.endpoint);
-            } else {
-              console.error('Не удалось отправить итоги недели', status);
-            }
-          }
-        }
+        reportsSentTotal += await sendToAll(userId, subscriptions, payload);
       }
     } catch {
       // Сбой у одного не должен оставить остальных без уведомлений — поэтому

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReport, isReportEmpty, planFromTasks } from './report';
+import { buildReport, describeReport, isReportEmpty, planFromTasks } from './report';
 import type { Task } from './types';
 
 const FROM = '2026-09-07';   // понедельник
@@ -157,5 +157,58 @@ describe('isReportEmpty', () => {
       monthLeft: [task({ id: 'm', title: 'Отчёт', date: '2026-09-01', horizon: 'month' })],
     });
     expect(isReportEmpty(report)).toBe(false);
+  });
+});
+
+describe('describeReport', () => {
+  it('обычный случай — «сделано · перенесено · не сделано»', () => {
+    const report = buildReport({
+      planned: [
+        { id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' },
+      ],
+      weekFrom: FROM, weekTo: TO, monthLeft: [],
+      current: [
+        task({ id: 'a', title: 'A', date: FROM, done: true }),
+        task({ id: 'b', title: 'B', date: '2026-09-20' }),
+        task({ id: 'c', title: 'C', date: TO }),
+      ],
+    });
+    expect(describeReport(report)).toEqual({
+      title: 'Итоги недели',
+      body: '1 сделано · 1 перенесено · 1 не сделано',
+    });
+  });
+
+  it('отчёт из одной только «убрано» даёт непустое тело', () => {
+    // Раньше в тело шли только done/postponed/notDone: неделя, где
+    // единственным содержанием была удалённая из снимка задача, проходила
+    // isReportEmpty как непустая, но получала пустой текст пуша.
+    const report = buildReport({
+      planned: [{ id: 'a', title: 'Кран' }], weekFrom: FROM, weekTo: TO,
+      current: [], monthLeft: [],
+    });
+    expect(isReportEmpty(report)).toBe(false);
+    expect(describeReport(report).body).toBe('1 убрано');
+  });
+
+  it('отчёт из одного только «сверх плана» даёт непустое тело', () => {
+    const report = buildReport({
+      planned: [], weekFrom: FROM, weekTo: TO, monthLeft: [],
+      current: [task({ id: 'b', title: 'Внеплановое', date: FROM, done: true })],
+    });
+    expect(isReportEmpty(report)).toBe(false);
+    expect(describeReport(report).body).toBe('1 сверх плана');
+  });
+
+  it('отчёт из одних только месячных даёт непустое тело', () => {
+    // Самый частый случай пустой недели: ничего не планировали, но в
+    // месячном списке есть дела. Раньше это был ровно тот отчёт, что
+    // отмечался отправленным и уходил с пустым текстом.
+    const report = buildReport({
+      planned: [], weekFrom: FROM, weekTo: TO, current: [],
+      monthLeft: [task({ id: 'm', title: 'Отчёт', date: '2026-09-01', horizon: 'month' })],
+    });
+    expect(isReportEmpty(report)).toBe(false);
+    expect(describeReport(report).body).toBe('1 осталось на месяц');
   });
 });
