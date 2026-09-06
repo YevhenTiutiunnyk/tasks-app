@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Chevron } from '@/components/Chevron';
 import { addDays } from '@/lib/dates';
 import { formatWeekRange } from '@/lib/format';
-import type { PlannedTask, WeeklyReport } from '@/lib/report';
+import { isReportEmpty, type PlannedTask, type WeeklyReport } from '@/lib/report';
 
 interface ReportData {
   weekStart: string | null;
@@ -112,6 +112,26 @@ export default function Report() {
   }
 
   const { report, weekStart } = data;
+
+  // saveReport пишет отчёт безусловно, включая полностью пустой, — иначе
+  // reported_at не проставился бы и планировщик пересчитывал бы ту же
+  // пустоту весь понедельник. getLatestReport при этом отбирает по
+  // «report is not null», а пустой отчёт — не null: неделя отпуска молча
+  // подставляется вместо последней настоящей. Отчёт про такую неделю
+  // получает свои слова, а не три нуля, неотличимых от «ничего не считали».
+  if (isReportEmpty(report)) {
+    return (
+      <main className="mx-auto max-w-md space-y-5 p-5">
+        {header}
+        <p className="text-sm text-muted">{formatWeekRange(weekStart, addDays(weekStart, 6))}</p>
+        <p className="text-sm text-muted">
+          Эта неделя прошла без единой записи: ничего не было запланировано,
+          ничего не сделано сверх плана, и в месячном списке пусто.
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-md space-y-5 p-5">
