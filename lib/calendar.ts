@@ -1,4 +1,6 @@
-import type { CalendarEvent } from './types';
+import { addDays } from './dates';
+import { nowInZone } from './notify';
+import type { CalendarEvent, EventDay } from './types';
 
 /** Тот кусок ресурса Event, который мы читаем. Остальные 30 полей не нужны. */
 export interface GoogleEvent {
@@ -87,4 +89,64 @@ export function toCalendarEvent(
     organizerEmail,
     googleUpdatedAt: new Date(raw.updated).toISOString(),
   };
+}
+
+const MINUTES_PER_DAY = 1440;
+
+/** Локальные дата и минута для абсолютного момента. */
+function localOf(iso: string, timezone: string): { date: string; minute: number } {
+  const { today, nowMinute } = nowInZone(timezone, new Date(iso));
+  return { date: today, minute: nowMinute };
+}
+
+/**
+ * Куски встреч по локальным дням окна.
+ *
+ * Событие на весь день — диапазон дат, и в пояс не переводится вовсе:
+ * иначе отпуск, начатый 9-го, у человека восточнее Гринвича начинался бы
+ * 8-го. Событие со временем переводится в пояс и режется по полуночи.
+ */
+export function splitIntoDays(
+  events: CalendarEvent[],
+  timezone: string,
+  from: string,
+  to: string,
+): EventDay[] {
+  const result: EventDay[] = [];
+
+  for (const event of events) {
+    const head = {
+      calendarId: event.calendarId,
+      eventId: event.eventId,
+      title: event.title,
+      mine: event.mine,
+    };
+
+    if (event.allDay) {
+      // Конец у Google не включается: с 9-го по 11-е — это 9-е и 10-е.
+      const last = addDays(event.endsAt.slice(0, 10), -1);
+      for (let date = event.startsAt.slice(0, 10); date <= last; date = addDays(date, 1)) {
+        if (date < from || date > to) continue;
+        result.push({ ...head, date, startMinute: null, durationMinutes: null, allDay: true });
+      }
+      continue;
+    }
+
+    const start = localOf(event.startsAt, timezone);
+    const end = localOf(event.endsAt, timezone);
+
+    for (let date = start.date; date <= end.date; date = addDays(date, 1)) {
+      const startMinute = date === start.date ? start.minute : 0;
+      const endMinute = date === end.date ? end.minute : MINUTES_PER_DAY;
+      // Ровно полночь на последнем дне — это конец предыдущего дня,
+      // а не нулевой кусок нового.
+      if (endMinute <= startMinute) continue;
+      if (date < from || date > to) continue;
+      result.push({
+        ...head, date, startMinute, durationMinutes: endMinute - startMinute, allDay: false,
+      });
+    }
+  }
+
+  return result;
 }
