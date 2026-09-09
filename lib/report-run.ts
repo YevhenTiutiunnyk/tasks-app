@@ -30,6 +30,15 @@ export interface ReportDeps {
   getChecklistTasks(userId: string, horizon: Horizon, anchor: string): Promise<Task[]>;
   /** Встречи недели, уже раскроенные по локальным дням пояса владельца. */
   getWeekEvents(userId: string, weekStart: string): Promise<EventDay[]>;
+  /**
+   * Встречи по всему окну хранимой копии календаря (месяц назад — три вперёд
+   * от weekStart), а не только той недели. У задач для «уехала за пределы
+   * недели» есть getTasksByIds — поиск по id вне диапазона дат; для встреч
+   * такого поиска у Google нет, зато вся хранимая копия и так лежит в нашей
+   * базе, и лишнего запроса к Google это не стоит. Без этого поиска встреча,
+   * переехавшая в другую неделю целиком, была бы неотличима от отменённой.
+   */
+  getEventsAround(userId: string, weekStart: string): Promise<EventDay[]>;
 }
 
 /**
@@ -96,15 +105,13 @@ export async function runWeeklyReport(
         deps.getChecklistTasks(userId, 'week', prevWeek),
         deps.getTasksByIds(userId, realIds),
         deps.getChecklistTasks(userId, 'month', today),
-        // Встречи прошлой недели — как они выглядят сейчас. У событий нет
-        // аналога getTasksByIds: искать по одному чужому id вне окна дат
-        // Google не даёт. Поэтому окно здесь то же самое, что и у самой
-        // недели, — а значит «перенесена» на практике отличит только сдвиг
-        // ВНУТРИ окна выборки (сутки запаса с каждой стороны в getWeekEvents),
-        // а встреча, уехавшая в другую неделю целиком, будет неотличима от
-        // отменённой. Тот же компромисс, что уже сделан для «моё/чужое»:
-        // осознанная цена, а не недосмотр.
-        deps.getWeekEvents(userId, prevWeek),
+        // Не getWeekEvents: та обрезана ровно по неделе снимка и по построению
+        // не может вернуть встречу с датой за её пределами — «перенесена»
+        // никогда бы не сработала. getEventsAround ищет по всему окну
+        // хранимой копии, поэтому уехавшая в другую неделю встреча всё ещё
+        // находится по id, а buildReport сам решает, попадает ли её дата
+        // в прошлую неделю.
+        deps.getEventsAround(userId, prevWeek),
       ]);
 
       const report = buildReport({

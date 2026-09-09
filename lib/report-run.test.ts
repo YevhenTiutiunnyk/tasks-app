@@ -28,6 +28,7 @@ function deps(over: Partial<ReportDeps> = {}): ReportDeps {
     getTasksByIds: async () => [],
     getChecklistTasks: async () => [],
     getWeekEvents: async () => [],
+    getEventsAround: async () => [],
     ...over,
   };
 }
@@ -153,7 +154,7 @@ describe('runWeeklyReport', () => {
     ]);
   });
 
-  it('отчёт видит встречи прошлой недели через getWeekEvents', async () => {
+  it('отчёт видит встречи прошлой недели через getEventsAround', async () => {
     const saveReport = vi.fn(async () => true);
     const report = await runWeeklyReport(
       deps({
@@ -166,13 +167,67 @@ describe('runWeeklyReport', () => {
                 reportedAt: null,
               }
             : null,
-        getWeekEvents: async (_u, week) =>
+        getEventsAround: async (_u, week) =>
           week === PREV ? [event({ eventId: 'e1', title: 'ZZ-созвон', date: PREV })] : [],
         saveReport,
       }),
       'u', MONDAY, 600, 540,
     );
     expect(report?.eventsHeld).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
+  });
+
+  it('встреча, уехавшая в другую неделю, — «перенесена», а не «отменена»', async () => {
+    // Ровно тот случай, что терял getWeekEvents: раскладка там обрезана по
+    // границам недели снимка, и встреча с датой за её пределами не могла
+    // найтись вовсе. getEventsAround ищет по всему окну хранимой копии,
+    // так что найденная-но-не-в-своей-неделе встреча обязана попасть
+    // в «перенесена».
+    const saveReport = vi.fn(async () => true);
+    const report = await runWeeklyReport(
+      deps({
+        getWeekSnapshot: async (_u, week) =>
+          week === PREV
+            ? {
+                weekStart: PREV,
+                planned: [{ id: 'gcal:primary:e1', title: 'ZZ-уехала', kind: 'event', mine: false }],
+                report: null,
+                reportedAt: null,
+              }
+            : null,
+        // Та же встреча всё ещё существует, но теперь её дата — через месяц,
+        // далеко за пределами прошлой недели.
+        getEventsAround: async () => [event({ eventId: 'e1', title: 'ZZ-уехала', date: '2026-10-05' })],
+        saveReport,
+      }),
+      'u', MONDAY, 600, 540,
+    );
+    expect(report?.eventsMoved).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-уехала', kind: 'event', mine: false }]);
+    expect(report?.eventsCancelled).toEqual([]);
+  });
+
+  it('встречи, которой в базе больше нет вовсе, — «отменена»', async () => {
+    // Отличается от предыдущего теста только тем, что getEventsAround вообще
+    // не возвращает строку с этим id: два случая легко перепутать местами,
+    // раз оба дают report.eventsCancelled/eventsMoved на пустом входе.
+    const saveReport = vi.fn(async () => true);
+    const report = await runWeeklyReport(
+      deps({
+        getWeekSnapshot: async (_u, week) =>
+          week === PREV
+            ? {
+                weekStart: PREV,
+                planned: [{ id: 'gcal:primary:e1', title: 'ZZ-отменена', kind: 'event', mine: false }],
+                report: null,
+                reportedAt: null,
+              }
+            : null,
+        getEventsAround: async () => [],
+        saveReport,
+      }),
+      'u', MONDAY, 600, 540,
+    );
+    expect(report?.eventsCancelled).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-отменена', kind: 'event', mine: false }]);
+    expect(report?.eventsMoved).toEqual([]);
   });
 
   it('снимок новой недели создаётся, даже если сборка отчёта упала', async () => {

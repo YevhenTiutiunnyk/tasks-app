@@ -25,15 +25,19 @@ import { loadRange } from '@/lib/week';
 import { splitIntoDays } from '@/lib/calendar';
 import { runWeeklyReport, type ReportDeps } from '@/lib/report-run';
 import { describeReport } from '@/lib/report';
-import { calendarDeps, syncUser } from '@/lib/calendar-run';
+import { calendarDeps, syncUser, syncWindow } from '@/lib/calendar-run';
 import type { EventDay, Task } from '@/lib/types';
 
 /**
- * Встречи недели для снимка и сравнения отчёта — тем же способом, что
+ * Встречи ровно той недели, что уходят в снимок, — тем же способом, что
  * и в lib/week.ts: сутки запаса с каждой стороны на выборку из базы,
  * а раскладка по дням уже режет ровно по границам недели. Без запаса
  * встреча, начавшаяся в 23:30 по местному времени последнего дня недели,
  * в UTC пришлась бы на следующие сутки и не попала бы в выборку вовсе.
+ *
+ * Для сравнения при сборке отчёта эта функция не годится: раскладка режет
+ * ровно по границам недели, и встреча, уехавшая за них, здесь никогда
+ * не найдётся — см. getEventsAround ниже.
  */
 const getWeekEvents: ReportDeps['getWeekEvents'] = async (userId, weekStart) => {
   const weekEnd = addDays(weekStart, 6);
@@ -42,6 +46,24 @@ const getWeekEvents: ReportDeps['getWeekEvents'] = async (userId, weekStart) => 
     getEventsBetween(userId, `${addDays(weekStart, -1)}T00:00:00.000Z`, `${addDays(weekEnd, 2)}T00:00:00.000Z`),
   ]);
   return splitIntoDays(events, timezone, weekStart, weekEnd);
+};
+
+/**
+ * Встречи по всему окну хранимой копии календаря, а не одной недели.
+ *
+ * Нужна для сравнения при сборке отчёта: встреча, уехавшая из прошлой
+ * недели совсем в другую, обязана всё ещё находиться по id, иначе она
+ * неотличима от отменённой. syncWindow — то же окно, что синхронизация уже
+ * держит в базе (месяц назад, три вперёд от даты-опоры), поэтому лишнего
+ * запроса к Google это не стоит: всё уже лежит в google_events.
+ */
+const getEventsAround: ReportDeps['getEventsAround'] = async (userId, weekStart) => {
+  const window = syncWindow(weekStart);
+  const [timezone, events] = await Promise.all([
+    getTimezone(userId),
+    getEventsBetween(userId, window.from, window.to),
+  ]);
+  return splitIntoDays(events, timezone, window.from.slice(0, 10), window.to.slice(0, 10));
 };
 
 /**
@@ -257,7 +279,7 @@ export async function POST(request: Request) {
         const report = await runWeeklyReport(
           {
             getWeekSnapshot, saveWeekSnapshot, saveReport, loadRange, getTasksByIds, getChecklistTasks,
-            getWeekEvents,
+            getWeekEvents, getEventsAround,
           },
           userId,
           today,
