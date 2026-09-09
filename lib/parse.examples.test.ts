@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import Anthropic from '@anthropic-ai/sdk';
 import { parseCommand } from './parse';
-import type { Settings, Task } from './types';
+import type { EventDay, Settings, Task } from './types';
 
 const run = process.env.RUN_LLM_TESTS ? describe : describe.skip;
 
@@ -47,10 +47,14 @@ const tasks: Task[] = [
 // Ключ для примеров берётся из окружения (.env.local): это стенд качества
 // разбора, а не приложение. У приложения ключ приходит из базы, от вошедшего.
 const client = new Anthropic();
+// Занятость в примерах качества не проверяется — стенд оценивает разбор
+// фразы в задачи, а не реакцию на календарь.
+const events: EventDay[] = [];
 const base = {
   today: '2026-08-04',
   timezone: 'Europe/Kyiv',
   tasks,
+  events,
   settings,
 };
 

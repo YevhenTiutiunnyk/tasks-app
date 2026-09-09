@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { addDays, isValidIsoDate, weekRange } from '@/lib/dates';
-import { getChecklistTasks, getSettings, getUserKey, saveTimezone } from '@/lib/db';
+import { getChecklistTasks, getEventsBetween, getSettings, getTimezone, getUserKey, saveTimezone } from '@/lib/db';
+import { splitIntoDays } from '@/lib/calendar';
 import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
@@ -9,6 +10,7 @@ import { parseCommand } from '@/lib/parse';
 import { anthropicFailure, clientForUser } from '@/lib/key-client';
 import { validateParseResult } from '@/lib/validate';
 import { applyOperations } from '@/lib/apply';
+import { findOverlaps } from '@/lib/overlap';
 
 export async function POST(request: Request) {
   const user = await requireUser(request);
@@ -44,16 +46,31 @@ export async function POST(request: Request) {
   // задачи вовсе — команда про них отвергалась бы проверкой идентификаторов.
   // Список идёт и в промпт, и в проверку идентификаторов ответа, поэтому
   // собирается один раз.
-  const [scheduled, weekTasks, nextWeekTasks, monthTasks, settings, keyRow] = await Promise.all([
-    loadRange(user.userId, contextFrom, contextTo),
-    getChecklistTasks(user.userId, 'week', today),
-    getChecklistTasks(user.userId, 'week', addDays(today, 7)),
-    getChecklistTasks(user.userId, 'month', today),
-    getSettings(user.userId),
-    getUserKey(user.userId),
-    saveZone,
-  ]);
+  // Пояс для раскладки встреч по дням берём из базы (сохранённый), а не из
+  // тела запроса: событие «весь день» и разрезка по полуночи должны совпадать
+  // с тем, что человек видит на экране расписания (lib/week.ts), а не гулять
+  // от случая к случаю, если устройство не прислало зону в этот раз.
+  const [scheduled, weekTasks, nextWeekTasks, monthTasks, settings, keyRow, storedTimezone, rawEvents] =
+    await Promise.all([
+      loadRange(user.userId, contextFrom, contextTo),
+      getChecklistTasks(user.userId, 'week', today),
+      getChecklistTasks(user.userId, 'week', addDays(today, 7)),
+      getChecklistTasks(user.userId, 'month', today),
+      getSettings(user.userId),
+      getUserKey(user.userId),
+      getTimezone(user.userId),
+      // Сутки с запасом с каждой стороны, как в loadWeek: встреча, начавшаяся
+      // в 23:30 по местному времени крайнего дня контекста, в UTC уже
+      // на соседних сутках и без запаса не попала бы в выборку.
+      getEventsBetween(
+        user.userId,
+        `${addDays(contextFrom, -1)}T00:00:00.000Z`,
+        `${addDays(contextTo, 2)}T00:00:00.000Z`,
+      ),
+      saveZone,
+    ]);
   const contextTasks = [...scheduled, ...weekTasks, ...nextWeekTasks, ...monthTasks];
+  const events = splitIntoDays(rawEvents, storedTimezone, contextFrom, contextTo);
 
   const key = clientForUser(user.userId, keyRow);
   if (key.response) return key.response;
@@ -65,6 +82,7 @@ export async function POST(request: Request) {
       today,
       timezone: timezone ?? 'UTC',
       tasks: contextTasks,
+      events,
       settings,
     });
   } catch (error) {
@@ -80,6 +98,7 @@ export async function POST(request: Request) {
       reply: parsed.reply,
       rejected: checked.rejected,
       needsTime: [],
+      overlaps: [],
       week: await loadWeek(user.userId, today),
     });
   }
@@ -108,11 +127,18 @@ export async function POST(request: Request) {
     return task ? [{ taskId: task.id, title: task.title, question: entry.question }] : [];
   });
 
+  // Наложение считаем ПОСЛЕ применения, не до: приложение не спрашивает
+  // разрешения, оно применяет и даёт откатить. По тому же трёхнедельному
+  // диапазону, что и applied выше, — иначе задача, переехавшая за пределы
+  // видимой недели, тихо потеряла бы своё предупреждение.
+  const overlaps = findOverlaps(applied, events);
+
   return NextResponse.json({
     batchId,
     reply: parsed.reply,
     rejected: checked.rejected,
     needsTime,
+    overlaps,
     week,
   });
 }

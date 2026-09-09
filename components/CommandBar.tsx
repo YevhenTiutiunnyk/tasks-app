@@ -8,6 +8,7 @@ export interface CommandResponse {
   reply: string;
   rejected: { reason: string }[];
   needsTime: { taskId: string; title: string; question: string }[];
+  overlaps: { taskTitle: string; eventTitle: string }[];
   week: unknown;
 }
 
@@ -33,6 +34,10 @@ export function CommandBar({ today, onResult }: Props) {
   // негде: плашка отмены появляется только при непустом batchId, и rejected
   // тут тоже пуст — отбраковывать было нечего.
   const [notice, setNotice] = useState('');
+  // Задачи, севшие поверх встреч — считается уже ПОСЛЕ применения операций.
+  // Это отчёт о том, что вышло, а не согласование: приложение не спрашивало
+  // разрешения, оно применило и даёт откатить.
+  const [overlaps, setOverlaps] = useState<{ taskTitle: string; eventTitle: string }[]>([]);
 
   function update(value: string) {
     setText(value);
@@ -45,6 +50,7 @@ export function CommandBar({ today, onResult }: Props) {
     setError('');
     setRejected([]);
     setNotice('');
+    setOverlaps([]);
     try {
       const response = await fetch('/api/command', {
         method: 'POST',
@@ -66,6 +72,7 @@ export function CommandBar({ today, onResult }: Props) {
       }
       update('');
       setRejected(body.rejected ?? []);
+      setOverlaps(body.overlaps ?? []);
       if (!body.batchId) setNotice(body.reply ?? '');
       onResult(body as CommandResponse);
     } catch {
@@ -106,6 +113,13 @@ export function CommandBar({ today, onResult }: Props) {
         <ul className="mx-auto mt-2 max-w-3xl space-y-0.5 text-[13px] text-now">
           {rejected.map((item, index) => (
             <li key={index}>Не выполнено: {item.reason}</li>
+          ))}
+        </ul>
+      )}
+      {overlaps.length > 0 && (
+        <ul className="mx-auto mt-2 max-w-3xl space-y-0.5 text-[13px] text-now">
+          {overlaps.map((item, index) => (
+            <li key={index}>{item.taskTitle} накладывается на встречу {item.eventTitle}</li>
           ))}
         </ul>
       )}

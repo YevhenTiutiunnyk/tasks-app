@@ -2,13 +2,14 @@ import 'server-only';
 import type Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { ParseResultSchema } from './schema';
-import type { ParseResult, Settings, Task } from './types';
+import type { EventDay, ParseResult, Settings, Task } from './types';
 
 export interface ParseInput {
   text: string;
   today: string;               // 'YYYY-MM-DD'
   timezone: string;            // например 'Europe/Kyiv'
   tasks: Task[];               // задачи трёх недель: текущая и соседние
+  events: EventDay[];          // встречи из календаря того же диапазона — только контекст, менять их нельзя
   settings: Settings;
 }
 
@@ -44,6 +45,11 @@ function buildSystemPrompt(input: ParseInput): string {
     '',
     'Текущие задачи (расписание и чеклисты):',
     input.tasks.length ? input.tasks.map(describeTask).join('\n') : '(пусто)',
+    '',
+    'Занятое время — встречи из календаря пользователя. Их НЕЛЬЗЯ менять, удалять и на них нельзя ссылаться в операциях: у них нет id задачи. Учитывай их как занятые часы и не назначай задачи поверх, если можно поставить рядом:',
+    input.events.length
+      ? input.events.map((event) => `- ${event.date} | ${event.allDay ? 'весь день' : `${minutesToClock(event.startMinute ?? 0)}, ${event.durationMinutes ?? 60} мин`} | ${event.title}`).join('\n')
+      : '(занятого времени нет)',
     '',
     'Правила:',
     '1. Ссылаться на существующую задачу можно только по её id из списка выше. Если подходящей задачи нет — операцию не создавай, объясни это в reply.',
