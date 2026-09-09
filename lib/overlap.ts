@@ -17,15 +17,22 @@ export function findOverlaps(
 
   for (const task of tasks) {
     if (task.allDay || task.startMinute === null) continue;
-    const taskEnd = task.startMinute + (task.durationMinutes ?? 60);
+    // После guard'а выше startMinute гарантированно число, но ?? 0 пишем
+    // явно, а не полагаемся на неявное приведение null к 0 в арифметике:
+    // на этом приведении тест чуть не проглядел снятый guard (ревью
+    // задачи 11, Important-2) — оно молча даёт «правдоподобное» число
+    // вместо NaN, и мутация осталась бы незамеченной.
+    const taskStart = task.startMinute ?? 0;
+    const taskEnd = taskStart + (task.durationMinutes ?? 60);
 
     for (const event of events) {
       if (event.allDay || event.startMinute === null) continue;
       if (event.date !== task.date) continue;
-      const eventEnd = event.startMinute + (event.durationMinutes ?? 60);
+      const eventStart = event.startMinute ?? 0;
+      const eventEnd = eventStart + (event.durationMinutes ?? 60);
       // Строгие неравенства: встреча в 11:00 после задачи, кончающейся
       // в 11:00, — это плотный день, а не ошибка.
-      if (task.startMinute < eventEnd && event.startMinute < taskEnd) {
+      if (taskStart < eventEnd && eventStart < taskEnd) {
         result.push({ taskTitle: task.title, eventTitle: event.title });
       }
     }

@@ -31,8 +31,27 @@ test('разные дни не пересекаются', () => {
   expect(findOverlaps([task()], [event({ date: '2026-09-10' })])).toEqual([]);
 });
 
-test('дела на весь день никого не блокируют', () => {
+// Обе фикстуры ниже подобраны так, чтобы удаление guard'а на allDay/null
+// у соответствующей стороны действительно давало ложное наложение — не как
+// в первой версии, где null в арифметике JS давал 60, случайно не задевавшее
+// фикстуры 600/630, и guard можно было снять, а тест оставался зелёным.
+// Здесь снятый guard превращает startMinute=null в 0, а окно дела на весь
+// день молча схлопывается в [0, 60) — и фикстуры нарочно попадают в это окно.
+
+test('дело на весь день не блокирует: guard на allDay-задаче обязателен', () => {
+  // Без guard'а startMinute (null) станет 0, durationMinutes (null) — 60
+  // через `?? 60», то есть виртуальное окно задачи — [0, 60). Событие
+  // [30, 50) лежит внутри этого окна и даст ложное наложение, если guard снят.
   const allDayTask = task({ allDay: true, startMinute: null, durationMinutes: null });
-  expect(findOverlaps([allDayTask], [event()])).toEqual([]);
-  expect(findOverlaps([task()], [event({ allDay: true, startMinute: null, durationMinutes: null })])).toEqual([]);
+  const eventInsideCollapsedWindow = event({ startMinute: 30, durationMinutes: 20 });
+  expect(findOverlaps([allDayTask], [eventInsideCollapsedWindow])).toEqual([]);
+});
+
+test('встреча на весь день не блокирует: guard на allDay-встрече обязателен', () => {
+  // Зеркально: у встречи startMinute/durationMinutes равны null, без guard'а
+  // её окно тоже схлопывается в [0, 60). Задача [30, 50) внутри — ложное
+  // наложение, если guard на событии снят.
+  const taskInsideCollapsedWindow = task({ startMinute: 30, durationMinutes: 20 });
+  const allDayEvent = event({ allDay: true, startMinute: null, durationMinutes: null });
+  expect(findOverlaps([taskInsideCollapsedWindow], [allDayEvent])).toEqual([]);
 });

@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { addDays, isValidIsoDate, weekRange } from '@/lib/dates';
-import { getChecklistTasks, getEventsBetween, getSettings, getTimezone, getUserKey, saveTimezone } from '@/lib/db';
-import { splitIntoDays } from '@/lib/calendar';
+import { getChecklistTasks, getSettings, getUserKey, saveTimezone } from '@/lib/db';
 import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
@@ -11,6 +10,7 @@ import { anthropicFailure, clientForUser } from '@/lib/key-client';
 import { validateParseResult } from '@/lib/validate';
 import { applyOperations } from '@/lib/apply';
 import { findOverlaps } from '@/lib/overlap';
+import { loadEventsForCommand } from '@/lib/command-events';
 
 export async function POST(request: Request) {
   const user = await requireUser(request);
@@ -46,31 +46,21 @@ export async function POST(request: Request) {
   // задачи вовсе — команда про них отвергалась бы проверкой идентификаторов.
   // Список идёт и в промпт, и в проверку идентификаторов ответа, поэтому
   // собирается один раз.
-  // Пояс для раскладки встреч по дням берём из базы (сохранённый), а не из
-  // тела запроса: событие «весь день» и разрезка по полуночи должны совпадать
-  // с тем, что человек видит на экране расписания (lib/week.ts), а не гулять
-  // от случая к случаю, если устройство не прислало зону в этот раз.
-  const [scheduled, weekTasks, nextWeekTasks, monthTasks, settings, keyRow, storedTimezone, rawEvents] =
-    await Promise.all([
-      loadRange(user.userId, contextFrom, contextTo),
-      getChecklistTasks(user.userId, 'week', today),
-      getChecklistTasks(user.userId, 'week', addDays(today, 7)),
-      getChecklistTasks(user.userId, 'month', today),
-      getSettings(user.userId),
-      getUserKey(user.userId),
-      getTimezone(user.userId),
-      // Сутки с запасом с каждой стороны, как в loadWeek: встреча, начавшаяся
-      // в 23:30 по местному времени крайнего дня контекста, в UTC уже
-      // на соседних сутках и без запаса не попала бы в выборку.
-      getEventsBetween(
-        user.userId,
-        `${addDays(contextFrom, -1)}T00:00:00.000Z`,
-        `${addDays(contextTo, 2)}T00:00:00.000Z`,
-      ),
-      saveZone,
-    ]);
+  // loadEventsForCommand сама глотает свою ошибку и никогда не отклоняет
+  // промис (см. комментарий у неё) — включить её в общий Promise.all наравне
+  // с обязательными данными безопасно для главного пути, а параллельность
+  // не теряется.
+  const [scheduled, weekTasks, nextWeekTasks, monthTasks, settings, keyRow, events] = await Promise.all([
+    loadRange(user.userId, contextFrom, contextTo),
+    getChecklistTasks(user.userId, 'week', today),
+    getChecklistTasks(user.userId, 'week', addDays(today, 7)),
+    getChecklistTasks(user.userId, 'month', today),
+    getSettings(user.userId),
+    getUserKey(user.userId),
+    loadEventsForCommand(user.userId, contextFrom, contextTo),
+    saveZone,
+  ]);
   const contextTasks = [...scheduled, ...weekTasks, ...nextWeekTasks, ...monthTasks];
-  const events = splitIntoDays(rawEvents, storedTimezone, contextFrom, contextTo);
 
   const key = clientForUser(user.userId, keyRow);
   if (key.response) return key.response;
