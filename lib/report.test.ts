@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReport, describeReport, isReportEmpty, planFromTasks } from './report';
+import { buildReport, describeReport, isReportEmpty, planFromEvents, planFromTasks } from './report';
 import type { Task } from './types';
 
 const FROM = '2026-09-07';   // понедельник
@@ -225,5 +225,61 @@ describe('describeReport', () => {
     });
     expect(isReportEmpty(report)).toBe(false);
     expect(describeReport(report).body).toBe('1 осталось на месяц');
+  });
+});
+
+describe('встречи в отчёте', () => {
+  it('снимок помечает встречи видом и принадлежностью', () => {
+    const planned = planFromEvents([{
+      calendarId: 'primary', eventId: 'e1', title: 'ZZ-созвон', date: '2026-09-09',
+      startMinute: 600, durationMinutes: 60, allDay: false, mine: false,
+    }]);
+    expect(planned).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
+  });
+
+  it('встреча состоялась, уехала и отменилась', () => {
+    const planned = [
+      { id: 'gcal:primary:held', title: 'ZZ-состоялась', kind: 'event' as const, mine: true },
+      { id: 'gcal:primary:moved', title: 'ZZ-уехала', kind: 'event' as const, mine: false },
+      { id: 'gcal:primary:gone', title: 'ZZ-отменена', kind: 'event' as const, mine: false },
+    ];
+    const report = buildReport({
+      planned, weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [],
+      currentEvents: [
+        { calendarId: 'primary', eventId: 'held', title: 'ZZ-состоялась', date: '2026-09-09', startMinute: 600, durationMinutes: 60, allDay: false, mine: true },
+        { calendarId: 'primary', eventId: 'moved', title: 'ZZ-уехала', date: '2026-09-20', startMinute: 600, durationMinutes: 60, allDay: false, mine: false },
+      ],
+    });
+    expect(report.eventsHeld.map((entry) => entry.id)).toEqual(['gcal:primary:held']);
+    expect(report.eventsMoved.map((entry) => entry.id)).toEqual(['gcal:primary:moved']);
+    expect(report.eventsCancelled.map((entry) => entry.id)).toEqual(['gcal:primary:gone']);
+  });
+
+  it('старый снимок без kind читается как задачи', () => {
+    // Гарантия совместимости: снимки, записанные до появления календаря,
+    // не несут ни kind, ни mine. Их отсутствие в бою — а не в тесте —
+    // означает «это задача», иначе первый же понедельник после выкладки
+    // уронит отчёт на снимке прошлой недели.
+    const report = buildReport({
+      planned: [{ id: 'task-1', title: 'ZZ-задача' }],
+      weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [], currentEvents: [],
+    });
+    expect(report.removed.map((entry) => entry.id)).toEqual(['task-1']);
+    expect(report.eventsCancelled).toEqual([]);
+  });
+
+  it('текст пуша называет встречи и чужие переносы', () => {
+    const report = buildReport({
+      planned: [
+        { id: 'gcal:primary:a', title: 'ZZ-1', kind: 'event' as const, mine: true },
+        { id: 'gcal:primary:b', title: 'ZZ-2', kind: 'event' as const, mine: false },
+      ],
+      weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [],
+      currentEvents: [
+        { calendarId: 'primary', eventId: 'a', title: 'ZZ-1', date: '2026-09-09', startMinute: 600, durationMinutes: 60, allDay: false, mine: true },
+      ],
+    });
+    expect(isReportEmpty(report)).toBe(false);
+    expect(describeReport(report).body).toBe('2 встречи, из них 1 изменили без вас');
   });
 });

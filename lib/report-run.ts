@@ -5,12 +5,13 @@ import { parseOccurrenceId } from './recurrence';
 import {
   buildReport,
   isReportEmpty,
+  planFromEvents,
   planFromTasks,
   type PlannedTask,
   type WeeklyReport,
 } from './report';
 import type { Horizon } from './horizons';
-import type { Task } from './types';
+import type { EventDay, Task } from './types';
 
 /**
  * Всё, чем модуль ходит наружу, — параметром.
@@ -27,6 +28,8 @@ export interface ReportDeps {
   loadRange(userId: string, from: string, to: string): Promise<Task[]>;
   getTasksByIds(userId: string, ids: string[]): Promise<Task[]>;
   getChecklistTasks(userId: string, horizon: Horizon, anchor: string): Promise<Task[]>;
+  /** Встречи недели, уже раскроенные по локальным дням пояса владельца. */
+  getWeekEvents(userId: string, weekStart: string): Promise<EventDay[]>;
 }
 
 /**
@@ -39,11 +42,12 @@ export interface ReportDeps {
  * в отчёт вовсе.
  */
 async function planFor(deps: ReportDeps, userId: string, weekStart: string) {
-  const [days, weekly] = await Promise.all([
+  const [days, weekly, events] = await Promise.all([
     deps.loadRange(userId, weekStart, addDays(weekStart, 6)),
     deps.getChecklistTasks(userId, 'week', weekStart),
+    deps.getWeekEvents(userId, weekStart),
   ]);
-  return planFromTasks([...days, ...weekly]);
+  return [...planFromTasks([...days, ...weekly]), ...planFromEvents(events)];
 }
 
 /** Задачи без повторов по идентификатору: списки ниже пересекаются. */
@@ -87,11 +91,20 @@ export async function runWeeklyReport(
         .map((entry) => entry.id)
         .filter((id) => parseOccurrenceId(id) === null);
 
-      const [inWeek, weekly, byId, month] = await Promise.all([
+      const [inWeek, weekly, byId, month, currentEvents] = await Promise.all([
         deps.loadRange(userId, prevWeek, prevTo),
         deps.getChecklistTasks(userId, 'week', prevWeek),
         deps.getTasksByIds(userId, realIds),
         deps.getChecklistTasks(userId, 'month', today),
+        // Встречи прошлой недели — как они выглядят сейчас. У событий нет
+        // аналога getTasksByIds: искать по одному чужому id вне окна дат
+        // Google не даёт. Поэтому окно здесь то же самое, что и у самой
+        // недели, — а значит «перенесена» на практике отличит только сдвиг
+        // ВНУТРИ окна выборки (сутки запаса с каждой стороны в getWeekEvents),
+        // а встреча, уехавшая в другую неделю целиком, будет неотличима от
+        // отменённой. Тот же компромисс, что уже сделан для «моё/чужое»:
+        // осознанная цена, а не недосмотр.
+        deps.getWeekEvents(userId, prevWeek),
       ]);
 
       const report = buildReport({
@@ -102,6 +115,7 @@ export async function runWeeklyReport(
         // уехавшая из недели, в inWeek уже не попадёт.
         current: unique([...inWeek, ...weekly, ...byId]),
         monthLeft: month.filter((task) => !task.done),
+        currentEvents,
       });
 
       // Сохраняем всегда, даже пустой: иначе запуск раз в минуту будет

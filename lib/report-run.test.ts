@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runWeeklyReport, type ReportDeps } from './report-run';
-import type { Task } from './types';
+import type { EventDay, Task } from './types';
 
 const MONDAY = '2026-09-14';
 const PREV = '2026-09-07';
@@ -12,6 +12,13 @@ function task(id: string, title: string, date: string, done = false): Task {
   };
 }
 
+function event(over: Partial<EventDay> & { eventId: string; title: string; date: string }): EventDay {
+  return {
+    calendarId: 'primary', startMinute: 600, durationMinutes: 60, allDay: false, mine: true,
+    ...over,
+  };
+}
+
 function deps(over: Partial<ReportDeps> = {}): ReportDeps {
   return {
     getWeekSnapshot: async () => null,
@@ -20,6 +27,7 @@ function deps(over: Partial<ReportDeps> = {}): ReportDeps {
     loadRange: async () => [],
     getTasksByIds: async () => [],
     getChecklistTasks: async () => [],
+    getWeekEvents: async () => [],
     ...over,
   };
 }
@@ -127,6 +135,44 @@ describe('runWeeklyReport', () => {
     );
     expect(saveReport).toHaveBeenCalled();
     expect(report).toBeNull();
+  });
+
+  it('снимок недели включает встречи наравне с задачами', async () => {
+    const saveWeekSnapshot = vi.fn();
+    await runWeeklyReport(
+      deps({
+        saveWeekSnapshot,
+        loadRange: async () => [task('a', 'Кран', MONDAY)],
+        getWeekEvents: async () => [event({ eventId: 'e1', title: 'ZZ-созвон', date: MONDAY })],
+      }),
+      'u', MONDAY, 600, 540,
+    );
+    expect(saveWeekSnapshot).toHaveBeenCalledWith('u', MONDAY, [
+      { id: 'a', title: 'Кран' },
+      { id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: true },
+    ]);
+  });
+
+  it('отчёт видит встречи прошлой недели через getWeekEvents', async () => {
+    const saveReport = vi.fn(async () => true);
+    const report = await runWeeklyReport(
+      deps({
+        getWeekSnapshot: async (_u, week) =>
+          week === PREV
+            ? {
+                weekStart: PREV,
+                planned: [{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }],
+                report: null,
+                reportedAt: null,
+              }
+            : null,
+        getWeekEvents: async (_u, week) =>
+          week === PREV ? [event({ eventId: 'e1', title: 'ZZ-созвон', date: PREV })] : [],
+        saveReport,
+      }),
+      'u', MONDAY, 600, 540,
+    );
+    expect(report?.eventsHeld).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
   });
 
   it('снимок новой недели создаётся, даже если сборка отчёта упала', async () => {

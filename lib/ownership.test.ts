@@ -1846,6 +1846,7 @@ run('изоляция по владельцу', () => {
       const wrote = await saveReport(idA, WEEK, {
         done: [{ id: 'zz-1', title: 'ZZ-Кран' }],
         notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+        eventsHeld: [], eventsMoved: [], eventsCancelled: [],
       });
       expect(wrote).toBe(true);
       const snapshot = await getWeekSnapshot(idA, WEEK);
@@ -1863,10 +1864,12 @@ run('изоляция по владельцу', () => {
       const first = await saveReport(idA, WEEK, {
         done: [{ id: 'zz-1', title: 'ZZ-Победитель' }],
         notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+        eventsHeld: [], eventsMoved: [], eventsCancelled: [],
       });
       const second = await saveReport(idA, WEEK, {
         done: [{ id: 'zz-2', title: 'ZZ-Проигравший' }],
         notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+        eventsHeld: [], eventsMoved: [], eventsCancelled: [],
       });
       expect(first).toBe(true);
       expect(second).toBe(false);
@@ -1879,6 +1882,7 @@ run('изоляция по владельцу', () => {
       await saveWeekSnapshot(idA, '2030-02-25', []);
       await saveReport(idA, '2030-02-25', {
         done: [], notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+        eventsHeld: [], eventsMoved: [], eventsCancelled: [],
       });
       await saveWeekSnapshot(idA, WEEK, []);   // свежая неделя, отчёта ещё нет
       const latest = await getLatestReport(idA);
@@ -1911,6 +1915,7 @@ run('изоляция по владельцу', () => {
       await saveReport(idA, WEEK, {
         done: [{ id: 'zz-1', title: 'ZZ-Кран' }],
         notDone: [], postponed: [], removed: [], extra: [], monthLeft: [],
+        eventsHeld: [], eventsMoved: [], eventsCancelled: [],
       });
       const response = await reportGet(new Request('http://t/api/report'));
       expect(response.status).toBe(200);

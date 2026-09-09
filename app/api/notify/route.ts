@@ -23,10 +23,26 @@ import { getTimezone } from '@/lib/db';
 import { addDays } from '@/lib/dates';
 import { loadRange } from '@/lib/week';
 import { splitIntoDays } from '@/lib/calendar';
-import { runWeeklyReport } from '@/lib/report-run';
+import { runWeeklyReport, type ReportDeps } from '@/lib/report-run';
 import { describeReport } from '@/lib/report';
 import { calendarDeps, syncUser } from '@/lib/calendar-run';
 import type { EventDay, Task } from '@/lib/types';
+
+/**
+ * Встречи недели для снимка и сравнения отчёта — тем же способом, что
+ * и в lib/week.ts: сутки запаса с каждой стороны на выборку из базы,
+ * а раскладка по дням уже режет ровно по границам недели. Без запаса
+ * встреча, начавшаяся в 23:30 по местному времени последнего дня недели,
+ * в UTC пришлась бы на следующие сутки и не попала бы в выборку вовсе.
+ */
+const getWeekEvents: ReportDeps['getWeekEvents'] = async (userId, weekStart) => {
+  const weekEnd = addDays(weekStart, 6);
+  const [timezone, events] = await Promise.all([
+    getTimezone(userId),
+    getEventsBetween(userId, `${addDays(weekStart, -1)}T00:00:00.000Z`, `${addDays(weekEnd, 2)}T00:00:00.000Z`),
+  ]);
+  return splitIntoDays(events, timezone, weekStart, weekEnd);
+};
 
 /**
  * Отправка напоминаний. Дёргается планировщиком Supabase раз в минуту.
@@ -239,7 +255,10 @@ export async function POST(request: Request) {
         // Понедельничный отчёт: своя проверка часа внутри, вызывается на каждом
         // прогоне, а не только когда есть due-напоминания.
         const report = await runWeeklyReport(
-          { getWeekSnapshot, saveWeekSnapshot, saveReport, loadRange, getTasksByIds, getChecklistTasks },
+          {
+            getWeekSnapshot, saveWeekSnapshot, saveReport, loadRange, getTasksByIds, getChecklistTasks,
+            getWeekEvents,
+          },
           userId,
           today,
           nowMinute,

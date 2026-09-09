@@ -22,6 +22,14 @@ const SECTIONS: { key: keyof WeeklyReport; title: string }[] = [
   { key: 'extra', title: 'Сделано сверх плана' },
 ];
 
+// Встречи — отдельным блоком тех же трёх списков ниже задач: другая природа
+// (не «моё решение», а календарь), другой набор состояний.
+const EVENT_SECTIONS: { key: keyof WeeklyReport; title: string }[] = [
+  { key: 'eventsHeld', title: 'Встречи состоялись' },
+  { key: 'eventsMoved', title: 'Перенесены' },
+  { key: 'eventsCancelled', title: 'Отменены' },
+];
+
 /**
  * Список отчёта. Объявлен на уровне модуля, а не внутри страницы:
  * компонент в теле другого компонента React пересоздаёт при каждом
@@ -38,6 +46,10 @@ function List({ title, items }: { title: string; items: PlannedTask[] }) {
         {items.map((item) => (
           <li key={item.id} className="border-t border-hairline py-2.5 text-[15px]">
             {item.title}
+            {/* Google не сообщает, кто именно изменил событие: пометка
+                держится на организаторе, а mine === false и означает
+                «решение было не ваше». */}
+            {item.mine === false && <span className="ml-1.5 text-muted">без вас</span>}
           </li>
         ))}
       </ul>
@@ -146,6 +158,10 @@ export default function Report() {
       </div>
 
       {SECTIONS.map(({ key, title }) => (
+        <List key={key} title={title} items={report[key]} />
+      ))}
+
+      {EVENT_SECTIONS.map(({ key, title }) => (
         <List key={key} title={title} items={report[key]} />
       ))}
 
