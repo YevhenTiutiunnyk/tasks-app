@@ -3,7 +3,10 @@ import { sql } from './db';
 import {
   addSubscription,
   clearUserKey,
+  disconnectCalendars,
+  getCalendars,
   getChecklistTasks,
+  getEventsBetween,
   getExceptions,
   getLatestReport,
   getNotifiableUsers,
@@ -20,6 +23,9 @@ import {
   saveTimezone,
   saveUserKey,
   saveWeekSnapshot,
+  setSelectedCalendars,
+  upsertCalendars,
+  upsertEvents,
 } from './db';
 import { decryptApiKey, encryptApiKey } from './user-key';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
@@ -1911,6 +1917,73 @@ run('изоляция по владельцу', () => {
       const body = await response.json();
       expect(body.weekStart).toBe(WEEK);
       expect(body.report.done).toEqual([{ id: 'zz-1', title: 'ZZ-Кран' }]);
+    });
+  });
+
+  // Задача 1 плана Google Calendar: новые таблицы читаются и пишутся по
+  // user_id, но регрессионной защиты вида «утечка между владельцами» у них
+  // не было — ровно того класса дефекта, ради которого этот файл появился
+  // после настоящей утечки (см. заголовок describe выше). Свой afterEach,
+  // как у блока «снимки недель»: календари и события не нужны остальным
+  // тестам файла, и держать их до общего clean() в конце незачем.
+  describe('изоляция календаря Google', () => {
+    afterEach(async () => {
+      await sql`delete from google_events where user_id in (${idA}, ${idB})`;
+      await sql`delete from google_calendars where user_id in (${idA}, ${idB})`;
+    });
+
+    it('getCalendars одного не отдаёт календари другого', async () => {
+      await upsertCalendars(idA, [{ calendarId: 'zz-cal-a', summary: 'ZZ-календарь A' }]);
+      await upsertCalendars(idB, [{ calendarId: 'zz-cal-b', summary: 'ZZ-календарь B' }]);
+      expect((await getCalendars(idA)).map((c) => c.calendarId)).toEqual(['zz-cal-a']);
+      expect((await getCalendars(idB)).map((c) => c.calendarId)).toEqual(['zz-cal-b']);
+    });
+
+    it('getEventsBetween одного не отдаёт события другого', async () => {
+      await upsertCalendars(idA, [{ calendarId: 'zz-cal-a', summary: 'ZZ-календарь A' }]);
+      await upsertCalendars(idB, [{ calendarId: 'zz-cal-b', summary: 'ZZ-календарь B' }]);
+      // Выбор обязателен: getEventsBetween фильтрует по c.selected, и без
+      // него тест ничего бы не проверил — оба списка были бы пустыми.
+      await setSelectedCalendars(idA, ['zz-cal-a']);
+      await setSelectedCalendars(idB, ['zz-cal-b']);
+      await upsertEvents(idA, [{
+        calendarId: 'zz-cal-a', eventId: 'zz-ev-a', title: 'ZZ-встреча A',
+        startsAt: '2030-03-04T08:00:00.000Z', endsAt: '2030-03-04T09:00:00.000Z',
+        allDay: false, mine: true, organizerEmail: null,
+        googleUpdatedAt: '2030-03-01T00:00:00.000Z',
+      }]);
+      await upsertEvents(idB, [{
+        calendarId: 'zz-cal-b', eventId: 'zz-ev-b', title: 'ZZ-встреча B',
+        startsAt: '2030-03-04T08:00:00.000Z', endsAt: '2030-03-04T09:00:00.000Z',
+        allDay: false, mine: true, organizerEmail: null,
+        googleUpdatedAt: '2030-03-01T00:00:00.000Z',
+      }]);
+
+      const forA = await getEventsBetween(idA, '2030-03-04T00:00:00.000Z', '2030-03-05T00:00:00.000Z');
+      const forB = await getEventsBetween(idB, '2030-03-04T00:00:00.000Z', '2030-03-05T00:00:00.000Z');
+      expect(forA.map((e) => e.eventId)).toEqual(['zz-ev-a']);
+      expect(forB.map((e) => e.eventId)).toEqual(['zz-ev-b']);
+    });
+
+    it('disconnectCalendars одного не трогает календари и события другого', async () => {
+      await upsertCalendars(idA, [{ calendarId: 'zz-cal-a', summary: 'ZZ-календарь A' }]);
+      await upsertCalendars(idB, [{ calendarId: 'zz-cal-b', summary: 'ZZ-календарь B' }]);
+      await setSelectedCalendars(idB, ['zz-cal-b']);
+      await upsertEvents(idB, [{
+        calendarId: 'zz-cal-b', eventId: 'zz-ev-b2', title: 'ZZ-встреча B2',
+        startsAt: '2030-03-04T08:00:00.000Z', endsAt: '2030-03-04T09:00:00.000Z',
+        allDay: false, mine: false, organizerEmail: 'zz-other@example.invalid',
+        googleUpdatedAt: '2030-03-01T00:00:00.000Z',
+      }]);
+
+      await disconnectCalendars(idA);
+
+      // A отключился и остался ни с чем...
+      expect(await getCalendars(idA)).toEqual([]);
+      // ...а у B — ни календарь, ни событие не задеты.
+      expect((await getCalendars(idB)).map((c) => c.calendarId)).toEqual(['zz-cal-b']);
+      const forB = await getEventsBetween(idB, '2030-03-04T00:00:00.000Z', '2030-03-05T00:00:00.000Z');
+      expect(forB.map((e) => e.eventId)).toEqual(['zz-ev-b2']);
     });
   });
 });
