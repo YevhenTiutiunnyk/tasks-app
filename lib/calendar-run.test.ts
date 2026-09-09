@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { CalendarAccessLost, SyncTokenExpired, type CalendarClient } from './google-api';
+import { CalendarAccessLost, SyncTokenExpired, type CalendarClient, type ListEventsParams } from './google-api';
 import { needsFullSync, syncCalendar, syncUser, syncWindow, type CalendarDeps } from './calendar-run';
 import type { CalendarRow } from './db';
 import type { CalendarEvent } from './types';
@@ -14,23 +14,43 @@ function calendar(patch: Partial<CalendarRow> = {}): CalendarRow {
   };
 }
 
+/**
+ * `order` и `calls` — не для одного теста, а общий журнал: несколько находок
+ * ревью («сохранили токен раньше времени», «переставили очистку и загрузку»,
+ * «pageToken потерялся по дороге») были бы неотличимы от правильного
+ * поведения, если бы поддельные зависимости помнили только итоговые суммы.
+ * `deleteEvents` вдобавок раньше игнорировал calendarId в записи — адресность
+ * удаления в чужой календарь была бы попросту нечем поймать.
+ */
 function deps(client: Partial<CalendarClient>, calendars: CalendarRow[] = [calendar()]) {
   const state = {
     upserted: [] as CalendarEvent[],
     deleted: [] as string[],
-    cleared: 0,
+    replaced: [] as { calendarId: string; events: CalendarEvent[] }[],
     saved: [] as Parameters<CalendarDeps['saveSyncState']>[2][],
+    calls: [] as { calendarId: string; params: ListEventsParams }[],
+    order: [] as string[],
   };
+  const listEvents = client.listEvents ?? (async () => ({ events: [], nextPageToken: null, nextSyncToken: null }));
   const full: CalendarDeps = {
     getCalendars: async () => calendars,
-    saveSyncState: async (_u, _c, s) => { state.saved.push(s); },
-    upsertEvents: async (_u, events) => { state.upserted.push(...events); },
-    deleteEvents: async (_u, _c, ids) => { state.deleted.push(...ids); },
-    clearCalendarEvents: async () => { state.cleared += 1; },
+    saveSyncState: async (_u, _c, s) => { state.saved.push(s); state.order.push('saveSyncState'); },
+    upsertEvents: async (_u, events) => { state.upserted.push(...events); state.order.push('upsertEvents'); },
+    deleteEvents: async (_u, calendarId, ids) => {
+      state.deleted.push(...ids.map((id) => `${calendarId}:${id}`));
+      state.order.push('deleteEvents');
+    },
+    replaceCalendarEvents: async (_u, calendarId, events) => {
+      state.replaced.push({ calendarId, events });
+      state.order.push('replaceCalendarEvents');
+    },
     clientFor: async () => ({
       listCalendars: async () => [],
-      listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: null }),
-      ...client,
+      listEvents: async (calendarId, params) => {
+        state.calls.push({ calendarId, params });
+        state.order.push('listEvents');
+        return listEvents(calendarId, params);
+      },
     }),
     ownerEmail: async () => 'zz-owner@example.invalid',
   };
@@ -50,7 +70,7 @@ test('без токена нужна полная загрузка, со све�
   expect(needsFullSync(calendar({ windowEnd: '2026-10-01' }), TODAY)).toBe(true);
 });
 
-test('страницы дочитываются до конца, токен сохраняется с последней', async () => {
+test('страницы дочитываются до конца, pageToken передаётся дальше, токен сохраняется одной записью после обхода', async () => {
   const pages = [
     { events: [{ id: 'a', updated: '2026-09-08T10:00:00.000Z', summary: 'ZZ-1', start: { dateTime: '2026-09-09T10:00:00Z' }, end: { dateTime: '2026-09-09T11:00:00Z' } }], nextPageToken: 'p2', nextSyncToken: null },
     { events: [{ id: 'b', updated: '2026-09-08T10:00:00.000Z', summary: 'ZZ-2', start: { dateTime: '2026-09-09T12:00:00Z' }, end: { dateTime: '2026-09-09T13:00:00Z' } }], nextPageToken: null, nextSyncToken: 'tok-2' },
@@ -59,10 +79,14 @@ test('страницы дочитываются до конца, токен со
   const { deps: d, state } = deps({ listEvents: async () => pages[call++] });
   await syncCalendar(d, 'zz-user', calendar(), TODAY);
   expect(state.upserted.map((event) => event.eventId)).toEqual(['a', 'b']);
+  // Мутация «сохранить токен внутри цикла страниц» дала бы 2 записи вместо 1.
+  expect(state.saved.length).toBe(1);
   expect(state.saved.at(-1)!.syncToken).toBe('tok-2');
+  // Мутация «pageToken не передаётся дальше» дала бы [undefined, undefined].
+  expect(state.calls.map((c) => c.params.pageToken)).toEqual([undefined, 'p2']);
 });
 
-test('отменённое и отклонённое удаляются из копии', async () => {
+test('отменённое и отклонённое удаляются из своего календаря', async () => {
   const { deps: d, state } = deps({
     listEvents: async () => ({
       events: [
@@ -73,8 +97,43 @@ test('отменённое и отклонённое удаляются из к�
     }),
   });
   await syncCalendar(d, 'zz-user', calendar(), TODAY);
-  expect(state.deleted.sort()).toEqual(['free', 'gone']);
+  // Адрес входит в саму запись — мутация «удаление ушло в чужой calendarId»
+  // была бы неотличима от правильного поведения, если бы мок его не помнил.
+  expect(state.deleted.sort()).toEqual(['primary:free', 'primary:gone']);
   expect(state.upserted).toEqual([]);
+});
+
+test('инкрементальная синхронизация не запускает полную перезагрузку, когда токен и окно свежие', async () => {
+  const { deps: d, state } = deps({
+    listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: 'tok-2' }),
+  });
+  await syncCalendar(d, 'zz-user', calendar(), TODAY);
+  // Мутация «run(needsFullSync(...)) → run(true)» перевела бы запрос на
+  // timeMin/timeMax и увела бы запись в replaceCalendarEvents.
+  expect(state.calls[0].params.syncToken).toBe('tok-1');
+  expect(state.calls[0].params.timeMin).toBeUndefined();
+  expect(state.replaced).toEqual([]);
+  expect(state.saved.at(-1)!.windowStart).toBeUndefined();
+});
+
+test('полная перезагрузка сначала докачивает все страницы и лишь потом заменяет копию одной операцией', async () => {
+  const pages = [
+    { events: [{ id: 'a', updated: '2026-09-08T10:00:00.000Z', summary: 'ZZ-1', start: { dateTime: '2026-09-09T10:00:00Z' }, end: { dateTime: '2026-09-09T11:00:00Z' } }], nextPageToken: 'p2', nextSyncToken: null },
+    { events: [{ id: 'b', updated: '2026-09-08T10:00:00.000Z', summary: 'ZZ-2', start: { dateTime: '2026-09-09T12:00:00Z' }, end: { dateTime: '2026-09-09T13:00:00Z' } }], nextPageToken: null, nextSyncToken: 'tok-full' },
+  ];
+  let call = 0;
+  const { deps: d, state } = deps({ listEvents: async () => pages[call++] });
+  await syncCalendar(d, 'zz-user', calendar({ syncToken: null }), TODAY);
+  // Порядок — сама суть исправления: обе страницы читаются ДО единственной
+  // замены. Старая перестановка «очистить, потом качать» дала бы
+  // replaceCalendarEvents (или clearCalendarEvents) первым элементом.
+  expect(state.order).toEqual(['listEvents', 'listEvents', 'replaceCalendarEvents', 'saveSyncState']);
+  expect(state.replaced.length).toBe(1);
+  expect(state.replaced[0].calendarId).toBe('primary');
+  expect(state.replaced[0].events.map((event) => event.eventId).sort()).toEqual(['a', 'b']);
+  expect(state.upserted).toEqual([]);
+  expect(state.saved.at(-1)!.windowStart).toBe('2026-08-08');
+  expect(state.saved.at(-1)!.windowEnd).toBe('2026-12-08');
 });
 
 test('протухший токен приводит к полной перезагрузке, а не к остановке', async () => {
@@ -86,14 +145,91 @@ test('протухший токен приводит к полной перез�
     },
   });
   await syncCalendar(d, 'zz-user', calendar(), TODAY);
-  expect(state.cleared).toBe(1);
+  expect(state.replaced.length).toBe(1);
   expect(state.saved.at(-1)!.syncToken).toBe('tok-new');
+});
+
+test('протухший токен посреди постраничного обхода тоже уходит в полную перезагрузку', async () => {
+  let call = 0;
+  const { deps: d, state } = deps({
+    listEvents: async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          events: [{ id: 'a', updated: '2026-09-08T10:00:00.000Z', summary: 'ZZ-1', start: { dateTime: '2026-09-09T10:00:00Z' }, end: { dateTime: '2026-09-09T11:00:00Z' } }],
+          nextPageToken: 'p2', nextSyncToken: null,
+        };
+      }
+      if (call === 2) throw new SyncTokenExpired();
+      return {
+        events: [{ id: 'z', updated: '2026-09-08T10:00:00.000Z', summary: 'ZZ-full', start: { dateTime: '2026-09-09T14:00:00Z' }, end: { dateTime: '2026-09-09T15:00:00Z' } }],
+        nextPageToken: null, nextSyncToken: 'tok-full',
+      };
+    },
+  });
+  await syncCalendar(d, 'zz-user', calendar(), TODAY);
+  // Первая (успевшая) страница инкрементального обхода уже попала в копию —
+  // это ожидаемо и безвредно: полная перезагрузка ниже заменит копию целиком.
+  expect(state.upserted.map((event) => event.eventId)).toEqual(['a']);
+  expect(state.replaced.length).toBe(1);
+  expect(state.replaced[0].events.map((event) => event.eventId)).toEqual(['z']);
+  expect(state.saved.at(-1)!.syncToken).toBe('tok-full');
 });
 
 test('потеря доступа помечает связь сломанной', async () => {
   const { deps: d, state } = deps({ listEvents: async () => { throw new CalendarAccessLost(); } });
   await expect(syncCalendar(d, 'zz-user', calendar(), TODAY)).rejects.toBeInstanceOf(CalendarAccessLost);
   expect(state.saved.at(-1)!.brokenAt).not.toBeNull();
+});
+
+test('отказ второй попытки после протухшего токена тоже помечает связь сломанной', async () => {
+  let attempt = 0;
+  const { deps: d, state } = deps({
+    listEvents: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new SyncTokenExpired();
+      throw new CalendarAccessLost();
+    },
+  });
+  // Раньше run(true) вызывался внутри того же catch, и его собственный отказ
+  // улетал бы наружу мимо обработки — brokenAt не выставлялся бы никогда.
+  await expect(syncCalendar(d, 'zz-user', calendar(), TODAY)).rejects.toBeInstanceOf(CalendarAccessLost);
+  expect(state.saved.at(-1)!.brokenAt).not.toBeNull();
+});
+
+test('успешная синхронизация снимает отметку сломанной связи', async () => {
+  const { deps: d, state } = deps({
+    listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: 'tok-2' }),
+  });
+  await syncCalendar(d, 'zz-user', calendar({ brokenAt: '2026-09-01T00:00:00.000Z' }), TODAY);
+  expect(state.saved.at(-1)!.brokenAt).toBeNull();
+});
+
+test('обход останавливается, если Google второй раз подряд возвращает тот же pageToken', async () => {
+  let calls = 0;
+  const { deps: d, state } = deps({
+    listEvents: async () => {
+      calls += 1;
+      return { events: [], nextPageToken: 'stuck', nextSyncToken: 'tok-stuck' };
+    },
+  });
+  await syncCalendar(d, 'zz-user', calendar(), TODAY);
+  // Первый ответ ещё продвигает обход (prev был undefined), второй его
+  // повторяет — предохранитель обязан оборвать цикл именно на нём.
+  expect(calls).toBe(2);
+  expect(state.saved.at(-1)!.syncToken).toBe('tok-stuck');
+});
+
+test('обход останавливается по потолку страниц, даже если pageToken каждый раз новый', async () => {
+  let calls = 0;
+  const { deps: d } = deps({
+    listEvents: async () => {
+      calls += 1;
+      return { events: [], nextPageToken: `p${calls}`, nextSyncToken: null };
+    },
+  });
+  await expect(syncCalendar(d, 'zz-user', calendar(), TODAY)).rejects.toThrow();
+  expect(calls).toBe(100);
 });
 
 test('syncUser пропускает невыбранные, сломанные и свежие календари', async () => {
@@ -103,5 +239,24 @@ test('syncUser пропускает невыбранные, сломанные �
     calendar({ calendarId: 'b', brokenAt: '2026-09-08T08:00:00.000Z' }),
     calendar({ calendarId: 'c', syncedAt: '2026-09-08T09:01:00.000Z' }), // 2 минуты назад
   ]);
-  expect(await syncUser(d, 'zz-user', TODAY, now)).toBe(0);
+  expect(await syncUser(d, 'zz-user', TODAY, now)).toEqual({ synced: 0, failed: 0 });
+});
+
+test('syncUser синхронизирует нужные календари и не останавливается на сбое одного из них', async () => {
+  const now = new Date('2026-09-08T09:10:00.000Z'); // 10 минут — уже пора всем троим
+  const seen: string[] = [];
+  const { deps: d } = deps(
+    {
+      listEvents: async (calendarId) => {
+        seen.push(calendarId);
+        if (calendarId === 'bad') throw new CalendarAccessLost();
+        return { events: [], nextPageToken: null, nextSyncToken: 'tok-x' };
+      },
+    },
+    [calendar({ calendarId: 'a' }), calendar({ calendarId: 'bad' }), calendar({ calendarId: 'c' })],
+  );
+  const result = await syncUser(d, 'zz-user', TODAY, now);
+  expect(result).toEqual({ synced: 2, failed: 1 });
+  // Сбой на 'bad' не должен был остановить обход раньше 'c'.
+  expect(seen).toEqual(['a', 'bad', 'c']);
 });

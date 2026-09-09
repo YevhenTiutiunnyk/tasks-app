@@ -690,6 +690,37 @@ export async function clearCalendarEvents(userId: string, calendarId: string): P
 }
 
 /**
+ * Полная замена копии календаря — одной транзакцией.
+ *
+ * Раньше полная перезагрузка сперва чистила копию, потом качала: сорвись
+ * закачка отказом (401/403 — тот же признак, что и превышение лимита
+ * запросов, а именно его полная перезагрузка страницами по 250 и задевает)
+ * между очисткой и первой вставкой — человек остался бы с пустой неделей
+ * навсегда, потому что после отказа календарь помечается сломанным и больше
+ * не трогается. `sql.begin` делает удаление и вставку одним атомарным шагом:
+ * либо старая копия жива до самого конца, либо (при отказе до вызова этой
+ * функции — она вызывается, только когда все страницы уже дочитаны) её
+ * никто не тронул вовсе.
+ */
+export async function replaceCalendarEvents(
+  userId: string, calendarId: string, events: CalendarEvent[],
+): Promise<void> {
+  await sql.begin(async (tx) => {
+    await tx`delete from google_events where user_id = ${userId} and calendar_id = ${calendarId}`;
+    for (const event of events) {
+      await tx`
+        insert into google_events (
+          user_id, calendar_id, event_id, title, starts_at, ends_at,
+          all_day, mine, organizer_email, google_updated_at)
+        values (
+          ${userId}, ${event.calendarId}, ${event.eventId}, ${event.title},
+          ${event.startsAt}, ${event.endsAt}, ${event.allDay}, ${event.mine},
+          ${event.organizerEmail}, ${event.googleUpdatedAt})`;
+    }
+  });
+}
+
+/**
  * Встречи, пересекающие отрезок. Именно пересечение, а не «дата начала
  * внутри»: отпуск, начавшийся до окна, обязан попасть в текущую неделю.
  *

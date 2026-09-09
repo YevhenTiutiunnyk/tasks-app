@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from './db';
 import {
   clearCalendarEvents, deleteEvents, disconnectCalendars, getCalendars,
-  getEventsBetween, saveSyncState, setSelectedCalendars, upsertCalendars, upsertEvents,
+  getEventsBetween, replaceCalendarEvents, saveSyncState, setSelectedCalendars,
+  upsertCalendars, upsertEvents,
 } from './db';
 
 // Файл ходит в базу. Без DATABASE_URL в окружении (обычный `npx vitest run`)
@@ -12,6 +13,9 @@ import {
 const run = process.env.DATABASE_URL ? describe : describe.skip;
 
 const USER = 'zz-cal-owner';
+// Второй владелец — только для проверки «чужого не тронул» у replaceCalendarEvents:
+// регрессия фильтра user_id иначе неотличима от простого совпадения.
+const OTHER_USER = 'zz-cal-other-owner';
 
 run('google_calendars / google_events', () => {
   beforeAll(async () => {
@@ -19,12 +23,16 @@ run('google_calendars / google_events', () => {
       insert into "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt")
       values (${USER}, 'ZZ', 'zz-cal@example.invalid', false, now(), now())
       on conflict ("id") do nothing`;
+    await sql`
+      insert into "user" ("id", "name", "email", "emailVerified", "createdAt", "updatedAt")
+      values (${OTHER_USER}, 'ZZ2', 'zz-cal-other@example.invalid', false, now(), now())
+      on conflict ("id") do nothing`;
   });
 
   afterAll(async () => {
-    await sql`delete from google_events where user_id = ${USER}`;
-    await sql`delete from google_calendars where user_id = ${USER}`;
-    await sql`delete from "user" where "id" = ${USER}`;
+    await sql`delete from google_events where user_id = ${USER} or user_id = ${OTHER_USER}`;
+    await sql`delete from google_calendars where user_id = ${USER} or user_id = ${OTHER_USER}`;
+    await sql`delete from "user" where "id" = ${USER} or "id" = ${OTHER_USER}`;
     await sql.end();
   });
 
@@ -68,6 +76,56 @@ run('google_calendars / google_events', () => {
 
     await clearCalendarEvents(USER, 'primary');
     expect(await getEventsBetween(USER, '2026-09-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z')).toEqual([]);
+  });
+
+  it('replaceCalendarEvents меняет копию целиком одной операцией', async () => {
+    await upsertCalendars(USER, [
+      { calendarId: 'primary', summary: 'ZZ-основной' },
+      { calendarId: 'work', summary: 'ZZ-рабочий' },
+    ]);
+    await upsertCalendars(OTHER_USER, [{ calendarId: 'primary', summary: 'ZZ-чужой' }]);
+    // getEventsBetween показывает только выбранные календари — без этого
+    // тест зависел бы от того, что 'primary' у USER выбрали более ранние
+    // тесты файла, а свежесозданные 'work' и календарь OTHER_USER остались
+    // бы невыбранными (selected по умолчанию false) и молча выпали из выборки.
+    await setSelectedCalendars(USER, ['primary', 'work']);
+    await setSelectedCalendars(OTHER_USER, ['primary']);
+
+    // Старьё лежит в трёх местах: в целевом календаре (должно исчезнуть),
+    // в другом календаре того же владельца и у чужого владельца в календаре
+    // с тем же именем — оба должны остаться нетронутыми ровно потому,
+    // что replaceCalendarEvents фильтрует по паре (user_id, calendar_id).
+    await upsertEvents(USER, [{
+      calendarId: 'primary', eventId: 'old', title: 'ZZ-старое',
+      startsAt: '2026-09-09T08:00:00.000Z', endsAt: '2026-09-09T09:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: 'zz-cal@example.invalid',
+      googleUpdatedAt: '2026-09-08T10:00:00.000Z',
+    }]);
+    await upsertEvents(USER, [{
+      calendarId: 'work', eventId: 'other-cal', title: 'ZZ-другой-календарь',
+      startsAt: '2026-09-09T08:00:00.000Z', endsAt: '2026-09-09T09:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: 'zz-cal@example.invalid',
+      googleUpdatedAt: '2026-09-08T10:00:00.000Z',
+    }]);
+    await upsertEvents(OTHER_USER, [{
+      calendarId: 'primary', eventId: 'other-owner', title: 'ZZ-чужое',
+      startsAt: '2026-09-09T08:00:00.000Z', endsAt: '2026-09-09T09:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: 'zz-cal-other@example.invalid',
+      googleUpdatedAt: '2026-09-08T10:00:00.000Z',
+    }]);
+
+    await replaceCalendarEvents(USER, 'primary', [{
+      calendarId: 'primary', eventId: 'new', title: 'ZZ-новое',
+      startsAt: '2026-09-10T08:00:00.000Z', endsAt: '2026-09-10T09:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: 'zz-cal@example.invalid',
+      googleUpdatedAt: '2026-09-09T10:00:00.000Z',
+    }]);
+
+    const mine = await getEventsBetween(USER, '2026-09-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z');
+    expect(mine.map((event) => event.eventId).sort()).toEqual(['new', 'other-cal']);
+
+    const theirs = await getEventsBetween(OTHER_USER, '2026-09-01T00:00:00.000Z', '2026-09-30T00:00:00.000Z');
+    expect(theirs.map((event) => event.eventId)).toEqual(['other-owner']);
   });
 
   it('disconnectCalendars убирает и календари, и события', async () => {
