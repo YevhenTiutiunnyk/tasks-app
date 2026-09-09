@@ -7,6 +7,7 @@ import { Chevron } from '@/components/Chevron';
 import { authClient } from '@/lib/auth-client';
 import { clockToMinutes, minutesToClock } from '@/lib/format';
 import PushToggle from '../push-toggle';
+import GoogleCalendarSection from './google-calendar';
 import type { Settings } from '@/lib/types';
 
 export default function SettingsPage() {
@@ -560,6 +561,8 @@ export default function SettingsPage() {
           </p>
         )}
       </section>
+
+      <GoogleCalendarSection />
 
       <div className="flex items-center gap-3 border-t border-hairline pt-4">
         <button
