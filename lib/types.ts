@@ -87,3 +87,29 @@ export interface ParseResult {
   needsTime: { operationIndex: number; question: string }[];
   reply: string;
 }
+
+/** Встреча из Google. Времена — абсолютные, ISO 8601 UTC. */
+export interface CalendarEvent {
+  calendarId: string;
+  eventId: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  allDay: boolean;
+  /** Организатор — владелец расписания. Отчёт делит по этому признаку. */
+  mine: boolean;
+  organizerEmail: string | null;
+  googleUpdatedAt: string;
+}
+
+/** Кусок встречи, попавший на один локальный день. Готов к показу и к модели. */
+export interface EventDay {
+  calendarId: string;
+  eventId: string;
+  title: string;
+  date: string;
+  startMinute: number | null;
+  durationMinutes: number | null;
+  allDay: boolean;
+  mine: boolean;
+}

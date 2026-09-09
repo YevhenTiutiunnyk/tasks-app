@@ -2,7 +2,7 @@ import 'server-only';
 import postgres from 'postgres';
 import { anchorFor, type Horizon } from './horizons';
 import { DEFAULT_SETTINGS, DEFAULT_TIMEZONE } from './settings-defaults';
-import type { Category, Recurrence, RecurrenceException, Settings, Task } from './types';
+import type { CalendarEvent, Category, Recurrence, RecurrenceException, Settings, Task } from './types';
 import type { SealedKey } from './user-key';
 import type { PlannedTask, WeeklyReport } from './report';
 
@@ -559,4 +559,171 @@ export async function saveReport(
     returning user_id
   `;
   return rows.length > 0;
+}
+
+/* ---------- копия календаря Google ---------- */
+
+export interface CalendarRow {
+  calendarId: string;
+  summary: string;
+  selected: boolean;
+  syncToken: string | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  syncedAt: string | null;
+  brokenAt: string | null;
+}
+
+export async function getCalendars(userId: string): Promise<CalendarRow[]> {
+  const rows = await sql`
+    select calendar_id, summary, selected, sync_token, window_start, window_end,
+           synced_at, broken_at
+    from google_calendars
+    where user_id = ${userId}
+    order by calendar_id`;
+  return rows.map((row) => ({
+    calendarId: row.calendar_id,
+    summary: row.summary,
+    selected: row.selected,
+    syncToken: row.sync_token,
+    windowStart: row.window_start === null ? null : toIsoDate(row.window_start),
+    windowEnd: row.window_end === null ? null : toIsoDate(row.window_end),
+    syncedAt: row.synced_at === null ? null : row.synced_at.toISOString(),
+    brokenAt: row.broken_at === null ? null : row.broken_at.toISOString(),
+  }));
+}
+
+/**
+ * Список календарей от Google. Обновляет ТОЛЬКО название.
+ *
+ * Выбор галочками и токен синхронизации живут дольше одного списка:
+ * затри их здесь — и каждое открытие настроек сбрасывало бы выбор человека
+ * и заставляло скачивать календарь заново.
+ */
+export async function upsertCalendars(
+  userId: string,
+  list: { calendarId: string; summary: string }[],
+): Promise<void> {
+  if (list.length === 0) return;
+  for (const item of list) {
+    await sql`
+      insert into google_calendars (user_id, calendar_id, summary)
+      values (${userId}, ${item.calendarId}, ${item.summary})
+      on conflict (user_id, calendar_id) do update set summary = excluded.summary`;
+  }
+}
+
+export async function setSelectedCalendars(userId: string, calendarIds: string[]): Promise<void> {
+  await sql`
+    update google_calendars
+    set selected = calendar_id = any(${calendarIds}::text[])
+    where user_id = ${userId}`;
+}
+
+/**
+ * Состояние синхронизации одного календаря.
+ *
+ * `brokenAt` различает три исхода намеренно, а не двумя (есть/нет): поле
+ * не передано — колонку не трогаем (успешная синхронизация не должна тереть
+ * отметку о прошлом сбое сама по себе, если её не сбрасывают явно); `null` —
+ * снять отметку; строка — поставить время сбоя. `undefined` и `null` — разные
+ * команды, поэтому обычное `??` тут не годится: оно стёрло бы разницу между
+ * «про сбой не говорили» и «сбоя нет». Ветка вместо `sql\`broken_at\`` внутри
+ * тернарника — postgres.js не подставляет сырой SQL-фрагмент в позицию
+ * значения так просто; поведение то же, запросов два вместо одного условного.
+ */
+export async function saveSyncState(
+  userId: string,
+  calendarId: string,
+  state: { syncToken: string | null; windowStart?: string; windowEnd?: string; brokenAt?: string | null },
+): Promise<void> {
+  if (state.brokenAt === undefined) {
+    await sql`
+      update google_calendars
+      set sync_token   = ${state.syncToken},
+          window_start = coalesce(${state.windowStart ?? null}::date, window_start),
+          window_end   = coalesce(${state.windowEnd ?? null}::date, window_end),
+          synced_at    = now()
+      where user_id = ${userId} and calendar_id = ${calendarId}`;
+  } else {
+    await sql`
+      update google_calendars
+      set sync_token   = ${state.syncToken},
+          window_start = coalesce(${state.windowStart ?? null}::date, window_start),
+          window_end   = coalesce(${state.windowEnd ?? null}::date, window_end),
+          broken_at    = ${state.brokenAt},
+          synced_at    = now()
+      where user_id = ${userId} and calendar_id = ${calendarId}`;
+  }
+}
+
+export async function upsertEvents(userId: string, events: CalendarEvent[]): Promise<void> {
+  for (const event of events) {
+    await sql`
+      insert into google_events (
+        user_id, calendar_id, event_id, title, starts_at, ends_at,
+        all_day, mine, organizer_email, google_updated_at)
+      values (
+        ${userId}, ${event.calendarId}, ${event.eventId}, ${event.title},
+        ${event.startsAt}, ${event.endsAt}, ${event.allDay}, ${event.mine},
+        ${event.organizerEmail}, ${event.googleUpdatedAt})
+      on conflict (user_id, calendar_id, event_id) do update set
+        title = excluded.title, starts_at = excluded.starts_at,
+        ends_at = excluded.ends_at, all_day = excluded.all_day,
+        mine = excluded.mine, organizer_email = excluded.organizer_email,
+        google_updated_at = excluded.google_updated_at`;
+  }
+}
+
+export async function deleteEvents(
+  userId: string, calendarId: string, eventIds: string[],
+): Promise<void> {
+  if (eventIds.length === 0) return;
+  await sql`
+    delete from google_events
+    where user_id = ${userId} and calendar_id = ${calendarId}
+      and event_id = any(${eventIds}::text[])`;
+}
+
+export async function clearCalendarEvents(userId: string, calendarId: string): Promise<void> {
+  await sql`delete from google_events where user_id = ${userId} and calendar_id = ${calendarId}`;
+}
+
+/**
+ * Встречи, пересекающие отрезок. Именно пересечение, а не «дата начала
+ * внутри»: отпуск, начавшийся до окна, обязан попасть в текущую неделю.
+ *
+ * Джойн на google_calendars и фильтр `c.selected` — не проверка владения
+ * (её уже даёт `e.user_id = userId`), а фильтр показа: событие невыбранного
+ * календаря лежит в кэше, но не должно попасть на экран.
+ */
+export async function getEventsBetween(
+  userId: string, fromIso: string, toIso: string,
+): Promise<CalendarEvent[]> {
+  const rows = await sql`
+    select e.calendar_id, e.event_id, e.title, e.starts_at, e.ends_at,
+           e.all_day, e.mine, e.organizer_email, e.google_updated_at
+    from google_events e
+    join google_calendars c
+      on c.user_id = e.user_id and c.calendar_id = e.calendar_id
+    where e.user_id = ${userId} and c.selected
+      and e.starts_at < ${toIso} and e.ends_at > ${fromIso}
+    order by e.starts_at, e.event_id`;
+  return rows.map((row) => ({
+    calendarId: row.calendar_id,
+    eventId: row.event_id,
+    title: row.title,
+    startsAt: row.starts_at.toISOString(),
+    endsAt: row.ends_at.toISOString(),
+    allDay: row.all_day,
+    mine: row.mine,
+    organizerEmail: row.organizer_email,
+    googleUpdatedAt: row.google_updated_at.toISOString(),
+  }));
+}
+
+/** Отключение Google-календаря: убирает и настройки, и весь скачанный кэш. */
+export async function disconnectCalendars(userId: string): Promise<void> {
+  await sql`delete from google_events where user_id = ${userId}`;
+  await sql`delete from google_calendars where user_id = ${userId}`;
 }

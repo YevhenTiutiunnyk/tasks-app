@@ -105,3 +105,30 @@ run('схема: снимки недель', () => {
     expect(rows.map((r) => r.column_name)).toEqual(['user_id', 'week_start']);
   });
 });
+
+/**
+ * Та же защита от расхождения схем, что и у блоков выше. Тест покраснеет
+ * на контейнере, собранном без миграции 0009.
+ *
+ * Проверяются четыре колонки google_events, у которых not null несёт смысл,
+ * а не просто «заполнено»: mine отличает «моя встреча» от «меня позвали» —
+ * отчёт делит по этому признаку, и null сделал бы деление неполным; starts_at
+ * и ends_at участвуют в выборке по пересечению отрезка (getEventsBetween) —
+ * сравнение с null там даёт unknown и тихо роняет строку из выдачи;
+ * google_updated_at — точка отсчёта будущей инкрементальной синхронизации.
+ */
+run('схема: события Google-календаря', () => {
+  it.each(['mine', 'starts_at', 'ends_at', 'google_updated_at'])(
+    '%s в google_events объявлен not null',
+    async (column) => {
+      const [row] = await sql`
+        select is_nullable
+        from information_schema.columns
+        where table_schema = 'public'
+          and table_name = 'google_events'
+          and column_name = ${column}
+      `;
+      expect(row?.is_nullable).toBe('NO');
+    },
+  );
+});
