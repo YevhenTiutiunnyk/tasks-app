@@ -23,6 +23,7 @@ import { addDays } from '@/lib/dates';
 import { loadRange } from '@/lib/week';
 import { runWeeklyReport } from '@/lib/report-run';
 import { describeReport } from '@/lib/report';
+import { calendarDeps, syncUser } from '@/lib/calendar-run';
 import type { Task } from '@/lib/types';
 
 /**
@@ -122,6 +123,7 @@ export async function POST(request: Request) {
   let dueTotal = 0;
   let subscriptionsTotal = 0;
   let reportsSentTotal = 0;
+  let calendarsSyncedTotal = 0;
 
   for (const userId of userIds) {
     try {
@@ -203,6 +205,22 @@ export async function POST(request: Request) {
       } catch {
         console.error('notify: сбой у одного из владельцев (отчёт)');
       }
+
+      // Синхронизация календаря — третья стадия, в своей попытке.
+      // Сбой чтения Google не должен уносить ни напоминания, ни отчёт:
+      // они уже отработали выше и к Google отношения не имеют.
+      try {
+        const calendarResult = await syncUser(calendarDeps, userId, today, new Date());
+        calendarsSyncedTotal += calendarResult.synced;
+        // Сбой отдельного календаря syncUser проглотил, чтобы не уносить
+        // соседние. Но молчать о нём нельзя — иначе стадия будет выглядеть
+        // успешной, ничего не синхронизировав.
+        if (calendarResult.failed > 0) console.error('notify: часть календарей не синхронизирована');
+      } catch {
+        // Ни адреса, ни идентификатора владельца, ни названий встреч:
+        // стадия и всё. Различать её в потоке логов надо по слову.
+        console.error('notify: сбой у одного из владельцев (календарь)');
+      }
     } catch {
       // Сбой у одного не должен оставить остальных без уведомлений — поэтому
       // try/catch внутри тела цикла, а не снаружи него. Эта попытка — только
@@ -227,5 +245,6 @@ export async function POST(request: Request) {
     due: dueTotal,
     subscriptions: subscriptionsTotal,
     reportsSent: reportsSentTotal,
+    calendarsSynced: calendarsSyncedTotal,
   });
 }

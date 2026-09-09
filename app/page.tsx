@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Chevron } from '@/components/Chevron';
 import { ClarifyDialog, type ClarifyItem } from '@/components/ClarifyDialog';
 import { CommandBar, type CommandResponse } from '@/components/CommandBar';
@@ -34,6 +34,10 @@ export default function Home() {
   const [actionError, setActionError] = useState('');
   const [loadError, setLoadError] = useState('');
   const [reloadToken, setReloadToken] = useState(0);
+  // Обновление календаря по открытию бьёт ровно один раз за жизнь страницы,
+  // а не на каждую смену anchor: иначе перелистывание недель туда-сюда
+  // дёргало бы Google на каждой стрелке.
+  const calendarSyncedOnOpen = useRef(false);
 
   // Все успешные ответы — команда, откат, уточнение, правка из карточки —
   // приходят неделей вокруг today. Показать такую неделю, не сдвинув anchor,
@@ -152,6 +156,25 @@ export default function Home() {
     })();
     return () => { cancelled = true; };
   }, [anchor, reloadToken, router]);
+
+  // Догоняющее обновление календаря. Расписание уже отрисовано первой
+  // удачной загрузкой недели — эта попытка ничего на экране не блокирует
+  // и, если ничего не пришло или запрос упал, тихо остаётся ни с чем:
+  // встречи просто останутся вчерашними до следующего фонового прогона.
+  useEffect(() => {
+    if (!week || calendarSyncedOnOpen.current) return;
+    calendarSyncedOnOpen.current = true;
+    void (async () => {
+      try {
+        const response = await fetch('/api/calendar/sync', { method: 'POST' });
+        if (!response.ok) return;
+        const { synced } = await response.json();
+        if (synced > 0) setReloadToken((token) => token + 1);
+      } catch {
+        // Нет связи — не беда, расписание уже показано.
+      }
+    })();
+  }, [week]);
 
   if (!week) {
     return loadError

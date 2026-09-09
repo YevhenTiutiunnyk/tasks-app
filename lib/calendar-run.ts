@@ -2,7 +2,12 @@ import 'server-only';
 import { addDays } from './dates';
 import { toCalendarEvent } from './calendar';
 import { CalendarAccessLost, SyncTokenExpired, type CalendarClient } from './google-api';
-import type { CalendarRow } from './db';
+import {
+  deleteEvents, getCalendars, replaceCalendarEvents, saveSyncState, upsertEvents,
+  type CalendarRow,
+} from './db';
+import { getUserEmailById } from './allowed-emails';
+import { getCalendarClient } from './google-token';
 import type { CalendarEvent } from './types';
 
 /** Пять минут между фоновыми обновлениями одного календаря. */
@@ -207,3 +212,15 @@ export async function syncUser(
   }
   return { synced, failed };
 }
+
+/**
+ * Боевые зависимости. Собраны здесь, а не в каждом роуте: планировщик
+ * и обновление по открытию приложения — два разных вызывающих, и если бы
+ * каждый собирал набор сам, они разошлись бы молча при следующей правке
+ * интерфейса CalendarDeps.
+ */
+export const calendarDeps: CalendarDeps = {
+  getCalendars, saveSyncState, upsertEvents, deleteEvents, replaceCalendarEvents,
+  clientFor: getCalendarClient,
+  ownerEmail: async (userId: string) => (await getUserEmailById(userId)) ?? '',
+};
