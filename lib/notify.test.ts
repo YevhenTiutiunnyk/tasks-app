@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from 'vitest';
-import { eventKey, normalizeTimezone, nowInZone, selectDue, selectDueEvents } from './notify';
+import { eventFetchWindow, eventKey, normalizeTimezone, nowInZone, selectDue, selectDueEvents } from './notify';
 import type { EventDay, Task } from './types';
 
 function task(overrides: Partial<Task> = {}): Task {
@@ -164,10 +164,17 @@ test('встреча попадает в отбор так же, как зада
   expect(due).toHaveLength(1);
 });
 
-test('событие на весь день не будит телефон в полночь', () => {
+test('событие на весь день завтра не будит телефон в 23:50 сегодня', () => {
+  // Прежний вариант теста (nowMinute: 0 в день самого события) не мог
+  // покраснеть при удалении фильтра allDay: startsAt в той арифметике и
+  // так получался 0, а условие «ещё не началось» само отсекало результат.
+  // Настоящая опасность — не сегодня, а всё то же перешагивание полуночи,
+  // что и у обычной встречи: null трактуется арифметикой как 0, поэтому
+  // офсет «завтра» без фильтра даёт startsAt = 1440, и окно «за 15 минут»
+  // ловит его в последние 15 минут сегодняшних суток — 23:45–23:59.
   const due = selectDueEvents({
-    events: [eventDay({ allDay: true, startMinute: null, durationMinutes: null })],
-    today: '2026-09-09', nowMinute: 0, beforeMinutes: 15, alreadySent: new Set(),
+    events: [eventDay({ allDay: true, startMinute: null, durationMinutes: null, date: '2026-09-10' })],
+    today: '2026-09-09', nowMinute: 23 * 60 + 50, beforeMinutes: 15, alreadySent: new Set(),
   });
   expect(due).toEqual([]);
 });
@@ -183,4 +190,24 @@ test('уже отправленное не повторяется', () => {
     beforeMinutes: 15, alreadySent: new Set(['gcal:primary:e1']),
   });
   expect(due).toEqual([]);
+});
+
+describe('окно выборки встреч для getEventsBetween', () => {
+  it('запас несимметричен: к концу окна двое суток, а не одни', () => {
+    // Раньше конец окна был короче ровно на эти сутки — вечерняя встреча
+    // в поясах западнее Гринвича выпадала из выборки ещё до selectDueEvents.
+    expect(eventFetchWindow('2026-09-09')).toEqual({
+      to: '2026-09-10',
+      fromIso: '2026-09-08T00:00:00.000Z',
+      toIso: '2026-09-12T00:00:00.000Z',
+    });
+  });
+
+  it('вечерняя встреча завтрашнего дня в America/New_York попадает в окно', () => {
+    // 20:30 по Нью-Йорку 10 сентября 2026 (EDT, UTC-4) — это уже
+    // 2026-09-11T00:30:00Z, то есть началом суток позже локальной даты.
+    const { toIso } = eventFetchWindow('2026-09-09');
+    const eveningTomorrowUtc = '2026-09-11T00:30:00.000Z';
+    expect(eveningTomorrowUtc < toIso).toBe(true);
+  });
 });

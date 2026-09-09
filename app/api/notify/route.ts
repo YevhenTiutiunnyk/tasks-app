@@ -18,7 +18,7 @@ import {
   type PushSubscriptionRow,
 } from '@/lib/db';
 import { formatTimeRange } from '@/lib/format';
-import { eventKey, nowInZone, selectDue, selectDueEvents } from '@/lib/notify';
+import { eventFetchWindow, eventKey, nowInZone, selectDue, selectDueEvents } from '@/lib/notify';
 import { getTimezone } from '@/lib/db';
 import { addDays } from '@/lib/dates';
 import { loadRange } from '@/lib/week';
@@ -166,25 +166,31 @@ export async function POST(request: Request) {
       // лечит, стучась заново каждую минуту до местной полуночи, но только
       // если у него есть шанс вообще запуститься.
       try {
-        // Встречи Google — тем же окном в двое суток, что и задачи, и по той
-        // же причине: окно напоминания перешагивает полночь. Загрузка и отбор —
-        // здесь же, а не в общей части выше: сбой чтения Google (запрос упал,
-        // пояс кривой) не должен читаться как сбой стадии «настройка» и не
-        // должен уносить с собой уже готовые к отправке due-задачи.
-        const to = addDays(today, 1);
-        const rawEvents = await getEventsBetween(
-          userId,
-          `${addDays(today, -1)}T00:00:00.000Z`,
-          `${addDays(to, 1)}T00:00:00.000Z`,
-        );
-        const events: EventDay[] = splitIntoDays(rawEvents, timezone, today, to);
-        const dueEvents = selectDueEvents({
-          events,
-          today,
-          nowMinute,
-          beforeMinutes: settings.notifyBeforeMinutes,
-          alreadySent,
-        });
+        // Встречи Google — своя внутренняя попытка, отдельная от отправки
+        // задач ниже. Загрузка и отбор — здесь же, а не в общей части выше:
+        // сбой чтения Google (запрос упал, пояс кривой) не должен читаться
+        // как сбой стадии «настройка». Но и падать вместе с отправкой задач
+        // ему нельзя: без своего try исключение здесь ушло бы в общий catch
+        // напоминаний ДО цикла по due, и уже отобранные задачи в этом
+        // прогоне остались бы неотправленными — хотя к Google отношения
+        // не имеют. При сбое просто нет встреч в этом прогоне: dueEvents = [].
+        let dueEvents: EventDay[] = [];
+        try {
+          // Тем же окном в двое суток, что и задачи, и по той же причине:
+          // окно напоминания перешагивает полночь.
+          const { to, fromIso, toIso } = eventFetchWindow(today);
+          const rawEvents = await getEventsBetween(userId, fromIso, toIso);
+          const events: EventDay[] = splitIntoDays(rawEvents, timezone, today, to);
+          dueEvents = selectDueEvents({
+            events,
+            today,
+            nowMinute,
+            beforeMinutes: settings.notifyBeforeMinutes,
+            alreadySent,
+          });
+        } catch {
+          console.error('notify: сбой у одного из владельцев (встречи)');
+        }
         dueTotal += dueEvents.length;
 
         // Не continue: дальше по коду ждёт отчёт за неделю, и его понедельничная

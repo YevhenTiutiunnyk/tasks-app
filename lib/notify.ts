@@ -146,3 +146,22 @@ export function selectDueEvents(input: {
     return nowMinute >= startsAt - beforeMinutes && nowMinute < startsAt;
   });
 }
+
+/**
+ * Границы окна выборки встреч в UTC для локальных дат today и завтра.
+ *
+ * Запас НЕсимметричен — сутки к началу, но двое суток к концу — как уже
+ * сделано в lib/week.ts. У человека западнее Гринвича (например,
+ * America/New_York) локальный вечер последнего дня окна в UTC приходится
+ * уже на следующие сутки: без второго дня запаса вечерняя встреча
+ * назавтра выпадала бы из выборки в getEventsBetween и не доходила бы
+ * даже до selectDueEvents.
+ */
+export function eventFetchWindow(today: string): { to: string; fromIso: string; toIso: string } {
+  const to = addDays(today, 1);
+  return {
+    to,
+    fromIso: `${addDays(today, -1)}T00:00:00.000Z`,
+    toIso: `${addDays(to, 2)}T00:00:00.000Z`,
+  };
+}
