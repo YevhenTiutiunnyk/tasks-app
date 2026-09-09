@@ -10,30 +10,53 @@ import {
   formatTimeRange,
   minutesToClock,
 } from '@/lib/format';
-import type { Settings, Task } from '@/lib/types';
+import type { EventDay, Settings, Task } from '@/lib/types';
 
 interface Props {
   from: string;
   to: string;
   tasks: Task[];
+  /** Встречи Google. Только читаются: вперемешку с задачами, без карточки. */
+  events: EventDay[];
   settings: Settings;
   today: string;
   onSelect: (task: Task) => void;
 }
 
-/** Подряд идущие дни без задач показываются одной строкой. */
+/** Задача или встреча одной строкой ленты — чтобы сортировать и мешать их вместе. */
+type FeedItem = { kind: 'task'; task: Task } | { kind: 'event'; event: EventDay };
+
+function isAllDayItem(item: FeedItem): boolean {
+  return item.kind === 'task' ? item.task.allDay : item.event.allDay;
+}
+
+function startMinuteOf(item: FeedItem): number {
+  return (item.kind === 'task' ? item.task.startMinute : item.event.startMinute) ?? 0;
+}
+
+/** События на весь день — первыми, как и задачи на весь день; дальше по времени начала. */
+function sortItems(items: FeedItem[]): FeedItem[] {
+  return [...items].sort((a, b) => {
+    const allDayA = isAllDayItem(a);
+    const allDayB = isAllDayItem(b);
+    if (allDayA !== allDayB) return allDayA ? -1 : 1;
+    return startMinuteOf(a) - startMinuteOf(b);
+  });
+}
+
+/** Подряд идущие дни без задач и встреч показываются одной строкой. */
 interface EmptyRun {
   kind: 'empty';
   days: string[];
 }
 
-interface DayWithTasks {
+interface DayWithItems {
   kind: 'day';
   day: string;
-  tasks: Task[];
+  items: FeedItem[];
 }
 
-type Row = EmptyRun | DayWithTasks;
+type Row = EmptyRun | DayWithItems;
 
 /**
  * Раньше каждый пустой день занимал заголовок и строку «пусто» — четыре
@@ -41,13 +64,13 @@ type Row = EmptyRun | DayWithTasks;
  * начиналась ниже середины. Сегодняшний день не сворачивается никогда,
  * даже пустой: его всегда надо видеть.
  */
-function buildRows(days: string[], byDate: Map<string, Task[]>, today: string): Row[] {
+function buildRows(days: string[], byDate: Map<string, FeedItem[]>, today: string): Row[] {
   const rows: Row[] = [];
 
   for (const day of days) {
-    const dayTasks = byDate.get(day)!;
-    if (dayTasks.length > 0 || day === today) {
-      rows.push({ kind: 'day', day, tasks: dayTasks });
+    const dayItems = byDate.get(day)!;
+    if (dayItems.length > 0 || day === today) {
+      rows.push({ kind: 'day', day, items: dayItems });
       continue;
     }
     const last = rows.at(-1);
@@ -69,7 +92,7 @@ function NowLine({ minute }: { minute: number }) {
   );
 }
 
-export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
+export function DayFeed({ from, to, tasks, events, settings, today, onSelect }: Props) {
   const nowMinute = useNowMinute();
   const todayRef = useRef<HTMLElement | null>(null);
 
@@ -102,8 +125,10 @@ export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
   }, [from, today]);
 
   const days = eachDay(from, to);
-  const byDate = new Map<string, Task[]>(days.map((day) => [day, []]));
-  for (const task of tasks) byDate.get(task.date)?.push(task);
+  const byDate = new Map<string, FeedItem[]>(days.map((day) => [day, []]));
+  for (const task of tasks) byDate.get(task.date)?.push({ kind: 'task', task });
+  for (const event of events) byDate.get(event.date)?.push({ kind: 'event', event });
+  for (const [day, items] of byDate) byDate.set(day, sortItems(items));
 
   const rows = buildRows(days, byDate, today);
 
@@ -153,19 +178,59 @@ export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
               )}
             </div>
 
-            {row.tasks.length === 0 ? (
+            {row.items.length === 0 ? (
               <p className="border-t border-hairline py-2.5 text-xs text-faint">пусто</p>
             ) : (
               <ul>
-                {row.tasks.map((task, index) => {
-                  const color =
-                    settings.categories.find((c) => c.id === task.categoryId)?.color ?? '#78716c';
-                  const startsAt = task.startMinute ?? 0;
+                {row.items.map((item, index) => {
+                  const startsAt = startMinuteOf(item);
+                  const allDay = isAllDayItem(item);
                   const line =
-                    !nowLinePlaced && !task.allDay && startsAt >= nowMinute! ? (
+                    !nowLinePlaced && !allDay && startsAt >= nowMinute! ? (
                       <NowLine minute={nowMinute!} />
                     ) : null;
                   if (line) nowLinePlaced = true;
+
+                  const borderClass =
+                    isToday && index === 0 ? 'border-t-[1.5px] border-ink' : 'border-hairline';
+
+                  if (item.kind === 'event') {
+                    const event = item.event;
+                    return (
+                      <Fragment key={`${event.calendarId}:${event.eventId}:${event.date}`}>
+                        {line}
+                        <li>
+                          {/* Встреча только читается: не кнопка, приглушённые
+                              рамка/подложка/текст, без цвета категории — он
+                              означает категорию задачи, и красить им чужую
+                              встречу значило бы соврать. */}
+                          <div
+                            className={`flex w-full items-stretch gap-3 border-t bg-surface py-2.5 text-left text-faint ${borderClass}`}
+                          >
+                            <span className="w-[3px] shrink-0 rounded-sm border border-hairline" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-base font-medium tracking-[-0.01em]">
+                                {event.title}
+                              </span>
+                              <span className="mt-0.5 block text-[13px] tabular-nums">
+                                {event.allDay
+                                  ? 'весь день'
+                                  : `${formatTimeRange(startsAt, event.durationMinutes)}${
+                                      event.durationMinutes
+                                        ? ` · ${formatDuration(event.durationMinutes)}`
+                                        : ''
+                                    }`}
+                              </span>
+                            </span>
+                          </div>
+                        </li>
+                      </Fragment>
+                    );
+                  }
+
+                  const task = item.task;
+                  const color =
+                    settings.categories.find((c) => c.id === task.categoryId)?.color ?? '#78716c';
 
                   return (
                     <Fragment key={task.id}>
@@ -174,11 +239,9 @@ export function DayFeed({ from, to, tasks, settings, today, onSelect }: Props) {
                         <button
                           onClick={() => onSelect(task)}
                           style={{ ['--cat' as string]: color }}
-                          className={`flex w-full items-stretch gap-3 border-t py-2.5 text-left ${
-                            isToday && index === 0
-                              ? 'border-t-[1.5px] border-ink'
-                              : 'border-hairline'
-                          } ${task.done ? 'opacity-45' : ''}`}
+                          className={`flex w-full items-stretch gap-3 border-t py-2.5 text-left ${borderClass} ${
+                            task.done ? 'opacity-45' : ''
+                          }`}
                         >
                           <span className="cat-bar w-[3px] shrink-0 rounded-sm" />
                           <span className="min-w-0 flex-1">

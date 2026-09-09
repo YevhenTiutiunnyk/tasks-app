@@ -5,7 +5,7 @@ import { useNowMinute } from '@/components/useNowMinute';
 import { eachDay, weekdayOf } from '@/lib/dates';
 import { formatDayLabel, formatTimeRange, minutesToClock } from '@/lib/format';
 import { visibleHourRange } from '@/lib/grid';
-import type { Settings, Task } from '@/lib/types';
+import type { EventDay, Settings, Task } from '@/lib/types';
 
 const HOUR_HEIGHT = 44;   // пикселей на час
 
@@ -13,6 +13,8 @@ interface Props {
   from: string;
   to: string;
   tasks: Task[];
+  /** Встречи Google. Только читаются: без перетаскивания и без карточки. */
+  events: EventDay[];
   settings: Settings;
   today: string;
   onSelect: (task: Task) => void;
@@ -23,7 +25,7 @@ function colorOf(task: Task, settings: Settings): string {
   return settings.categories.find((c) => c.id === task.categoryId)?.color ?? '#64748b';
 }
 
-export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }: Props) {
+export function WeekGrid({ from, to, tasks, events, settings, today, onSelect, onMove }: Props) {
   const days = eachDay(from, to);
 
   const [dragging, setDragging] = useState<{ taskId: string; grabOffset: number } | null>(null);
@@ -46,6 +48,16 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
   }
   for (const task of tasks) {
     (task.allDay ? allDayByDate : timedByDate).get(task.date)?.push(task);
+  }
+
+  const allDayEventsByDate = new Map<string, EventDay[]>();
+  const timedEventsByDate = new Map<string, EventDay[]>();
+  for (const day of days) {
+    allDayEventsByDate.set(day, []);
+    timedEventsByDate.set(day, []);
+  }
+  for (const event of events) {
+    (event.allDay ? allDayEventsByDate : timedEventsByDate).get(event.date)?.push(event);
   }
 
   return (
@@ -85,6 +97,16 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                   {task.title}
                 </button>
               ))}
+              {allDayEventsByDate.get(day)!.map((event) => (
+                // Встреча только читается: без onClick и цвета категории — рамка,
+                // подложка и текст приглушённые, чтобы не выдать её за задачу.
+                <div
+                  key={`${event.calendarId}:${event.eventId}:${event.date}`}
+                  className="block w-full truncate rounded-md border border-hairline bg-surface px-1.5 py-1 text-left text-[11px] text-faint"
+                >
+                  {event.title}
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -123,6 +145,27 @@ export function WeekGrid({ from, to, tasks, settings, today, onSelect, onMove }:
                   aria-hidden
                 />
               )}
+
+              {timedEventsByDate.get(day)!.map((event) => {
+                const start = event.startMinute ?? 0;
+                const top = ((start - firstHour * 60) / 60) * HOUR_HEIGHT;
+                const full = Math.max(18, ((event.durationMinutes ?? 60) / 60) * HOUR_HEIGHT - 2);
+                const height = Math.max(18, Math.min(full, gridHeight - top));
+                return (
+                  // pointer-events-none: встреча лежит под задачами и не должна
+                  // перехватывать клик или перетаскивание, даже если блоки совпали.
+                  <div
+                    key={`${event.calendarId}:${event.eventId}:${event.date}`}
+                    style={{ top, height }}
+                    className="pointer-events-none absolute inset-x-1 flex flex-col items-stretch justify-start overflow-hidden rounded-md border border-hairline bg-surface px-2 py-1 text-left text-[11px] leading-tight text-faint"
+                  >
+                    <span className="block truncate font-medium">{event.title}</span>
+                    <span className="block text-[10px] tabular-nums">
+                      {formatTimeRange(start, event.durationMinutes)}
+                    </span>
+                  </div>
+                );
+              })}
 
               {timedByDate.get(day)!.map((task) => {
                 const start = task.startMinute ?? 0;

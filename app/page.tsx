@@ -12,12 +12,14 @@ import { UndoToast } from '@/components/UndoToast';
 import { WeekGrid } from '@/components/WeekGrid';
 import { addDays, todayIso } from '@/lib/dates';
 import { formatWeekRange } from '@/lib/format';
-import type { Settings, Task } from '@/lib/types';
+import type { EventDay, Settings, Task } from '@/lib/types';
 
 interface WeekData {
   from: string;
   to: string;
   tasks: Task[];
+  /** Встречи Google, уже разложенные по дням недели сервером. Только читаются. */
+  events: EventDay[];
   settings: Settings;
   hasKey: boolean;
 }
@@ -295,6 +297,7 @@ export default function Home() {
           from={week.from}
           to={week.to}
           tasks={week.tasks}
+          events={week.events}
           settings={week.settings}
           today={todayIso()}
           onSelect={setSelected}
@@ -305,6 +308,7 @@ export default function Home() {
           from={week.from}
           to={week.to}
           tasks={week.tasks}
+          events={week.events}
           settings={week.settings}
           today={todayIso()}
           onSelect={setSelected}

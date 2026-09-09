@@ -1,13 +1,19 @@
 import 'server-only';
-import { getExceptions, getRecurrences, getSettings, getTasksBetween, hasUserKey } from './db';
+import {
+  getExceptions, getEventsBetween, getRecurrences, getSettings, getTasksBetween, getTimezone,
+  hasUserKey,
+} from './db';
+import { splitIntoDays } from './calendar';
 import { expandRecurrences } from './recurrence';
-import { weekRange } from './dates';
-import type { Settings, Task } from './types';
+import { addDays, weekRange } from './dates';
+import type { EventDay, Settings, Task } from './types';
 
 export interface WeekData {
   from: string;
   to: string;
   tasks: Task[];
+  /** Встречи Google, уже разложенные по локальным дням недели. Только читаются. */
+  events: EventDay[];
   settings: Settings;
   /**
    * Признак «строка ключа есть и шифротекст заполнен», а НЕ «ключ пригоден».
@@ -37,10 +43,16 @@ export async function loadRange(userId: string, from: string, to: string): Promi
 
 export async function loadWeek(userId: string, anchor: string): Promise<WeekData> {
   const { from, to } = weekRange(anchor);
-  const [tasks, settings, hasKey] = await Promise.all([
+  // Границы — абсолютные моменты краёв недели в поясе владельца, поэтому берём
+  // сутки с запасом с каждой стороны и режем раскладкой: встреча, начавшаяся
+  // в 23:30 по местному времени последнего дня недели, в UTC приходится уже
+  // на следующие сутки и без запаса не попала бы в выборку вовсе.
+  const [tasks, settings, hasKey, timezone, events] = await Promise.all([
     loadRange(userId, from, to),
     getSettings(userId),
     hasUserKey(userId),
+    getTimezone(userId),
+    getEventsBetween(userId, `${addDays(from, -1)}T00:00:00.000Z`, `${addDays(to, 2)}T00:00:00.000Z`),
   ]);
-  return { from, to, tasks, settings, hasKey };
+  return { from, to, tasks, events: splitIntoDays(events, timezone, from, to), settings, hasKey };
 }
