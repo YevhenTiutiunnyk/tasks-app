@@ -115,12 +115,20 @@ export async function syncCalendar(
         if (drop.length > 0) await deps.deleteEvents(userId, calendar.calendarId, drop);
       }
 
-      pageToken = page.nextPageToken ?? undefined;
-      syncToken = page.nextSyncToken ?? syncToken;
+      const nextPageToken = page.nextPageToken ?? undefined;
       // Тот же токен второй раз подряд — Google не продвигается по страницам.
-      // Без этой проверки обход крутился бы вечно вместо того, чтобы дойти
-      // до потолка выше или (что то же самое, но медленнее) съесть его весь.
-      if (pageToken !== undefined && pageToken === requestedPageToken) break;
+      // Бросаем, а не выходим через break: оборванный обход — это не «обход
+      // закончился». break довёл бы код ниже до обычного успешного пути —
+      // при полной перезагрузке в replaceCalendarEvents ушло бы то немногое,
+      // что успели набрать (то есть копия стёрлась бы), а при инкрементальной
+      // сохранился бы новый syncToken, будто всё дочитано, и недочитанные
+      // изменения потерялись бы навсегда. И то и другое — та же дыра, ради
+      // которой чинили Critical, просто через другую дверь.
+      if (nextPageToken !== undefined && nextPageToken === requestedPageToken) {
+        throw new Error('Google не продвигается по страницам календаря (повторяющийся pageToken)');
+      }
+      pageToken = nextPageToken;
+      syncToken = page.nextSyncToken ?? syncToken;
     } while (pageToken);
 
     if (full) {

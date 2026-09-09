@@ -128,6 +128,34 @@ run('google_calendars / google_events', () => {
     expect(theirs.map((event) => event.eventId)).toEqual(['other-owner']);
   });
 
+  it('replaceCalendarEvents откатывает всё целиком, если транзакция падает', async () => {
+    await upsertCalendars(USER, [{ calendarId: 'atomic', summary: 'ZZ-атомарность' }]);
+    await upsertEvents(USER, [{
+      calendarId: 'atomic', eventId: 'keep-me', title: 'ZZ-старое',
+      startsAt: '2026-09-09T08:00:00.000Z', endsAt: '2026-09-09T09:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: 'zz-cal@example.invalid',
+      googleUpdatedAt: '2026-09-08T10:00:00.000Z',
+    }]);
+
+    // Дублирующийся event_id роняет вторую вставку нарушением первичного
+    // ключа (user_id, calendar_id, event_id) — дёшево воспроизводит настоящий
+    // сбой транзакции настоящей базой, без подмены sql. Если replaceCalendarEvents
+    // когда-нибудь лишится sql.begin, delete и первая вставка успеют
+    // закоммититься по отдельности до того, как вторая упадёт, — и старое
+    // событие останется удалённым, а не восстановленным откатом.
+    const dup = {
+      calendarId: 'atomic', eventId: 'dup', title: 'ZZ-новое',
+      startsAt: '2026-09-10T08:00:00.000Z', endsAt: '2026-09-10T09:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: 'zz-cal@example.invalid',
+      googleUpdatedAt: '2026-09-09T10:00:00.000Z',
+    };
+    await expect(replaceCalendarEvents(USER, 'atomic', [dup, dup])).rejects.toThrow();
+
+    const rows = await sql`
+      select event_id from google_events where user_id = ${USER} and calendar_id = 'atomic'`;
+    expect(rows.map((row) => row.event_id)).toEqual(['keep-me']);
+  });
+
   it('disconnectCalendars убирает и календари, и события', async () => {
     await upsertCalendars(USER, [{ calendarId: 'primary', summary: 'ZZ-основной' }]);
     await upsertEvents(USER, [{

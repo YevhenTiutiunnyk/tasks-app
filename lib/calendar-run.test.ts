@@ -205,7 +205,7 @@ test('успешная синхронизация снимает отметку 
   expect(state.saved.at(-1)!.brokenAt).toBeNull();
 });
 
-test('обход останавливается, если Google второй раз подряд возвращает тот же pageToken', async () => {
+test('застрявший pageToken обрывает обход отказом, а не тихим успехом (инкрементальная ветка)', async () => {
   let calls = 0;
   const { deps: d, state } = deps({
     listEvents: async () => {
@@ -213,11 +213,35 @@ test('обход останавливается, если Google второй р
       return { events: [], nextPageToken: 'stuck', nextSyncToken: 'tok-stuck' };
     },
   });
-  await syncCalendar(d, 'zz-user', calendar(), TODAY);
+  // Раньше повтор токена обрывал цикл через break и код доходил до обычного
+  // успешного пути: инкрементальная ветка сохранила бы 'tok-stuck', как будто
+  // всё дочитано, и по-настоящему недочитанные изменения потерялись бы
+  // навсегда. Прерванный обход обязан кончаться отказом, а не успехом.
+  await expect(syncCalendar(d, 'zz-user', calendar(), TODAY)).rejects.toThrow();
   // Первый ответ ещё продвигает обход (prev был undefined), второй его
-  // повторяет — предохранитель обязан оборвать цикл именно на нём.
+  // повторяет — обрыв обязан случиться именно на нём.
   expect(calls).toBe(2);
-  expect(state.saved.at(-1)!.syncToken).toBe('tok-stuck');
+  // Ни токен, ни что-либо ещё не сохранено: обрыв не дошёл до финальных операций.
+  expect(state.saved).toEqual([]);
+});
+
+test('застрявший pageToken при полной перезагрузке не стирает старую копию', async () => {
+  let calls = 0;
+  const { deps: d, state } = deps({
+    listEvents: async () => {
+      calls += 1;
+      return { events: [], nextPageToken: 'stuck', nextSyncToken: null };
+    },
+  });
+  // Тот же обрыв, но в ветке полной перезагрузки: раньше break доводил бы код
+  // до replaceCalendarEvents с тем немногим, что успели набрать (пустым
+  // списком в этом сценарии), — и стирал бы копию целиком. Именно этот путь
+  // воспроизвёл ревьюер: та же пустая неделя, что чинили в Critical, только
+  // через другую дверь.
+  await expect(syncCalendar(d, 'zz-user', calendar({ syncToken: null }), TODAY)).rejects.toThrow();
+  expect(calls).toBe(2);
+  expect(state.replaced).toEqual([]);
+  expect(state.saved).toEqual([]);
 });
 
 test('обход останавливается по потолку страниц, даже если pageToken каждый раз новый', async () => {
