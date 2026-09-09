@@ -64,3 +64,23 @@ test('событие без организатора считается свои
 test('событие без названия получает читаемую заглушку', () => {
   expect(toCalendarEvent(raw({ summary: undefined }), 'primary', OWNER)!.title).toBe('(без названия)');
 });
+
+test('событие без start или end не может быть отображено, возвращает null', () => {
+  expect(toCalendarEvent(raw({ start: undefined }), 'primary', OWNER)).toBeNull();
+  expect(toCalendarEvent(raw({ end: undefined }), 'primary', OWNER)).toBeNull();
+  expect(toCalendarEvent(raw({ start: undefined, end: undefined }), 'primary', OWNER)).toBeNull();
+});
+
+test('событие без явного контекста времени (без Z или смещения) неопределённо, возвращает null', () => {
+  // Строка без Z и без смещения разбирается по часовому поясу процесса
+  const noContext = raw({ start: { dateTime: '2026-09-09T10:00:00' }, end: { dateTime: '2026-09-09T11:00:00' } });
+  expect(toCalendarEvent(noContext, 'primary', OWNER)).toBeNull();
+
+  // Только Z в start, но не в end
+  const onlyStartZ = raw({ start: { dateTime: '2026-09-09T10:00:00Z' }, end: { dateTime: '2026-09-09T11:00:00' } });
+  expect(toCalendarEvent(onlyStartZ, 'primary', OWNER)).toBeNull();
+
+  // С Z или смещением — проходит
+  expect(toCalendarEvent(raw({ start: { dateTime: '2026-09-09T10:00:00Z' }, end: { dateTime: '2026-09-09T11:00:00Z' } }), 'primary', OWNER)).not.toBeNull();
+  expect(toCalendarEvent(raw({ start: { dateTime: '2026-09-09T10:00:00+02:00' }, end: { dateTime: '2026-09-09T11:00:00+02:00' } }), 'primary', OWNER)).not.toBeNull();
+});
