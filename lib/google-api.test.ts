@@ -27,3 +27,21 @@ test('410 превращается в SyncTokenExpired, 401 — в CalendarAcces
   await expect(client.listEvents('primary', { syncToken: 't' })).rejects.toBeInstanceOf(SyncTokenExpired);
   await expect(client.listEvents('primary', { timeMin: 'a', timeMax: 'b' })).rejects.toBeInstanceOf(CalendarAccessLost);
 });
+
+test('403 тоже даёт CalendarAccessLost', async () => {
+  const client = googleClient('zz-token', async () => new Response('{}', { status: 403 }));
+  await expect(client.listEvents('primary', { timeMin: 'a', timeMax: 'b' })).rejects.toBeInstanceOf(
+    CalendarAccessLost
+  );
+});
+
+test('500 даёт обычную Error, не содержащую тела ответа', async () => {
+  const secretBody = '{"error":"ZZ-секретное название встречи"}';
+  const client = googleClient('zz-token', async () => new Response(secretBody, { status: 500 }));
+  const error = await client.listEvents('primary', { timeMin: 'a', timeMax: 'b' }).catch((e) => e);
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toBeInstanceOf(SyncTokenExpired);
+  expect(error).not.toBeInstanceOf(CalendarAccessLost);
+  expect(error.message).not.toContain('секретное');
+  expect(error.message).not.toContain('ZZ');
+});
