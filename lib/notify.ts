@@ -1,5 +1,5 @@
 import { addDays } from './dates';
-import type { Task } from './types';
+import type { EventDay, Task } from './types';
 
 const MINUTES_PER_DAY = 1440;
 
@@ -104,6 +104,45 @@ export function selectDue(input: SelectDueInput): Task[] {
     if (offset === null) return false;
 
     const startsAt = offset * MINUTES_PER_DAY + task.startMinute;
+    return nowMinute >= startsAt - beforeMinutes && nowMinute < startsAt;
+  });
+}
+
+/**
+ * Ключ отметки об отправке. Своей колонки у встреч нет намеренно:
+ * механизм отметок в проекте уже есть — таблица `sent` с глобально
+ * уникальными ключами и уборкой старых записей. Второй способ делать
+ * то же самое означал бы вторую уборку, которую однажды забудут.
+ *
+ * Календарь в ключе обязателен: одно и то же событие видно в двух
+ * календарях под одним идентификатором.
+ */
+export function eventKey(event: EventDay): string {
+  return `gcal:${event.calendarId}:${event.eventId}`;
+}
+
+/**
+ * Встречи, о которых пора напомнить. Правило то же, что у задач:
+ * «уже пора и ещё не началось», а не попадание в конкретную минуту.
+ */
+export function selectDueEvents(input: {
+  events: EventDay[];
+  today: string;
+  nowMinute: number;
+  beforeMinutes: number;
+  alreadySent: ReadonlySet<string>;
+}): EventDay[] {
+  const { events, today, nowMinute, beforeMinutes, alreadySent } = input;
+
+  return events.filter((event) => {
+    // События на весь день — молча, как и задачи на весь день выше.
+    if (event.allDay || event.startMinute === null) return false;
+    if (alreadySent.has(eventKey(event))) return false;
+
+    const offset = dayOffset(today, event.date);
+    if (offset === null) return false;
+
+    const startsAt = offset * MINUTES_PER_DAY + event.startMinute;
     return nowMinute >= startsAt - beforeMinutes && nowMinute < startsAt;
   });
 }

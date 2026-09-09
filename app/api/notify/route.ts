@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import webpush from 'web-push';
 import {
   getChecklistTasks,
+  getEventsBetween,
   getNotifiableUsers,
   getSentKeys,
   getSettings,
@@ -17,14 +18,15 @@ import {
   type PushSubscriptionRow,
 } from '@/lib/db';
 import { formatTimeRange } from '@/lib/format';
-import { nowInZone, selectDue } from '@/lib/notify';
+import { eventKey, nowInZone, selectDue, selectDueEvents } from '@/lib/notify';
 import { getTimezone } from '@/lib/db';
 import { addDays } from '@/lib/dates';
 import { loadRange } from '@/lib/week';
+import { splitIntoDays } from '@/lib/calendar';
 import { runWeeklyReport } from '@/lib/report-run';
 import { describeReport } from '@/lib/report';
 import { calendarDeps, syncUser } from '@/lib/calendar-run';
-import type { Task } from '@/lib/types';
+import type { EventDay, Task } from '@/lib/types';
 
 /**
  * Отправка напоминаний. Дёргается планировщиком Supabase раз в минуту.
@@ -44,12 +46,19 @@ function secretMatches(provided: string | null): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function describe(task: Task, beforeMinutes: number): { title: string; body: string } {
-  const when = task.startMinute === null
+/**
+ * Текст пуша — общий для задач и встреч: обоим нужны только заголовок
+ * и время, а не полный набор полей Task или EventDay.
+ */
+function describe(
+  item: Pick<Task, 'title' | 'startMinute' | 'durationMinutes'>,
+  beforeMinutes: number,
+): { title: string; body: string } {
+  const when = item.startMinute === null
     ? ''
-    : ` · ${formatTimeRange(task.startMinute, task.durationMinutes)}`;
+    : ` · ${formatTimeRange(item.startMinute, item.durationMinutes)}`;
   return {
-    title: task.title,
+    title: item.title,
     body: `Через ${beforeMinutes} мин${when}`,
   };
 }
@@ -157,11 +166,33 @@ export async function POST(request: Request) {
       // лечит, стучась заново каждую минуту до местной полуночи, но только
       // если у него есть шанс вообще запуститься.
       try {
+        // Встречи Google — тем же окном в двое суток, что и задачи, и по той
+        // же причине: окно напоминания перешагивает полночь. Загрузка и отбор —
+        // здесь же, а не в общей части выше: сбой чтения Google (запрос упал,
+        // пояс кривой) не должен читаться как сбой стадии «настройка» и не
+        // должен уносить с собой уже готовые к отправке due-задачи.
+        const to = addDays(today, 1);
+        const rawEvents = await getEventsBetween(
+          userId,
+          `${addDays(today, -1)}T00:00:00.000Z`,
+          `${addDays(to, 1)}T00:00:00.000Z`,
+        );
+        const events: EventDay[] = splitIntoDays(rawEvents, timezone, today, to);
+        const dueEvents = selectDueEvents({
+          events,
+          today,
+          nowMinute,
+          beforeMinutes: settings.notifyBeforeMinutes,
+          alreadySent,
+        });
+        dueTotal += dueEvents.length;
+
         // Не continue: дальше по коду ждёт отчёт за неделю, и его понедельничная
         // проверка часа никак не связана с тем, есть ли прямо сейчас due-напоминания.
-        if (due.length > 0 && subscriptions.length > 0) {
+        if ((due.length > 0 || dueEvents.length > 0) && subscriptions.length > 0) {
           const delivered: string[] = [];
 
+          // Порядок: сначала задачи, потом встречи — как в разделе задач выше.
           for (const task of due) {
             const payload = JSON.stringify({ ...describe(task, settings.notifyBeforeMinutes), tag: task.id });
             const count = await sendToAll(userId, subscriptions, payload, 'напоминание');
@@ -172,6 +203,17 @@ export async function POST(request: Request) {
             if (count > 0) delivered.push(task.id);
           }
 
+          for (const event of dueEvents) {
+            const key = eventKey(event);
+            const payload = JSON.stringify({ ...describe(event, settings.notifyBeforeMinutes), tag: key });
+            const count = await sendToAll(userId, subscriptions, payload, 'напоминание');
+            sentTotal += count;
+
+            if (count > 0) delivered.push(key);
+          }
+
+          // Одним вызовом на задачи и встречи: обе отметки живут в одной
+          // таблице `sent` с глобально уникальными ключами.
           await markSent(delivered);
         }
       } catch {

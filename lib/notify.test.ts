@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeTimezone, nowInZone, selectDue } from './notify';
-import type { Task } from './types';
+import { describe, expect, it, test } from 'vitest';
+import { eventKey, normalizeTimezone, nowInZone, selectDue, selectDueEvents } from './notify';
+import type { EventDay, Task } from './types';
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -147,4 +147,40 @@ describe('отбор задач для напоминания', () => {
     expect(due([task()], 14 * 60 - 30, { beforeMinutes: 30 })).toEqual(['task-1']);
     expect(due([task()], 14 * 60 - 30)).toEqual([]);
   });
+});
+
+function eventDay(patch: Partial<EventDay> = {}): EventDay {
+  return {
+    calendarId: 'primary', eventId: 'e1', title: 'ZZ-созвон', date: '2026-09-09',
+    startMinute: 600, durationMinutes: 60, allDay: false, mine: true, ...patch,
+  };
+}
+
+test('встреча попадает в отбор так же, как задача', () => {
+  const due = selectDueEvents({
+    events: [eventDay()], today: '2026-09-09', nowMinute: 590,
+    beforeMinutes: 15, alreadySent: new Set(),
+  });
+  expect(due).toHaveLength(1);
+});
+
+test('событие на весь день не будит телефон в полночь', () => {
+  const due = selectDueEvents({
+    events: [eventDay({ allDay: true, startMinute: null, durationMinutes: null })],
+    today: '2026-09-09', nowMinute: 0, beforeMinutes: 15, alreadySent: new Set(),
+  });
+  expect(due).toEqual([]);
+});
+
+test('ключ отправки различает календари', () => {
+  expect(eventKey(eventDay())).toBe('gcal:primary:e1');
+  expect(eventKey(eventDay({ calendarId: 'work' }))).not.toBe(eventKey(eventDay()));
+});
+
+test('уже отправленное не повторяется', () => {
+  const due = selectDueEvents({
+    events: [eventDay()], today: '2026-09-09', nowMinute: 590,
+    beforeMinutes: 15, alreadySent: new Set(['gcal:primary:e1']),
+  });
+  expect(due).toEqual([]);
 });
