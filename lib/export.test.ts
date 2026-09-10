@@ -20,7 +20,13 @@ test('выгружаются только дела с днём и часом', (
   const weekly = task({ id: 't3', horizon: 'week' });
   const monthly = task({ id: 't4', horizon: 'month' });
   const noTime = task({ id: 't5', startMinute: null });
-  expect(exportableTasks([good, allDay, weekly, monthly, noTime]).map((item) => item.id)).toEqual(['t1']);
+  // Дело на весь день, у которого время начала всё-таки проставлено, —
+  // единственная форма, что проверяет само условие `!allDay`, а не
+  // соседнее условие про время.
+  const allDayWithTime = task({ id: 't6', allDay: true, startMinute: 600 });
+  expect(
+    exportableTasks([good, allDay, weekly, monthly, noTime, allDayWithTime]).map((item) => item.id),
+  ).toEqual(['t1']);
 });
 
 test('выполненная задача получает галочку в названии', () => {
