@@ -3,8 +3,8 @@
 import { useRef, useState } from 'react';
 import { useNowMinute } from '@/components/useNowMinute';
 import { eachDay, weekdayOf } from '@/lib/dates';
-import { formatDayLabel, formatTimeRange, minutesToClock } from '@/lib/format';
-import { visibleHourRange } from '@/lib/grid';
+import { formatDayLabel, formatTimeRange, meetingsWord, minutesToClock } from '@/lib/format';
+import { eventsOutsideRange, visibleHourRange } from '@/lib/grid';
 import type { EventDay, Settings, Task } from '@/lib/types';
 
 const HOUR_HEIGHT = 44;   // пикселей на час
@@ -34,11 +34,37 @@ export function WeekGrid({ from, to, tasks, events, settings, today, onSelect, o
   // каждый клик перетаскиванием — карточка не открылась бы никогда.
   const pressStart = useRef<{ x: number; y: number } | null>(null);
 
-  // Рабочий день плюс два часа с каждой стороны, растянутый под реальные дела
-  // недели — и задачи, и встречи. Встречи здесь обязательны: без них встреча
-  // вне рабочих часов не поместилась бы в сетку и просто не нарисовалась.
   const nowMinute = useNowMinute();
-  const { firstHour, lastHour } = visibleHourRange(tasks, settings, events);
+
+  /**
+   * Раскрытые края сетки. Неделя — часть состояния намеренно: разворот
+   * принадлежит той неделе, где его сделали, и при перелистывании края
+   * снова свёрнуты.
+   *
+   * Без этого один ночной перелёт растягивал бы на все сутки каждую
+   * следующую неделю, которую человек листает, — цена одного дела
+   * платилась бы вечно. Сброс сделан сравнением при отрисовке, а не
+   * эффектом: setState внутри эффекта даёт лишнюю перерисовку, и правило
+   * react-hooks это запрещает.
+   */
+  const [expanded, setExpanded] = useState({ week: from, before: false, after: false });
+  const open = expanded.week === from ? expanded : { week: from, before: false, after: false };
+
+  // Базовый диапазон считается по задачам: это дела человека, и сетка обязана
+  // вмещать их всегда. Встречи в него не входят — иначе одна встреча в час
+  // ночи добавляет девять часов пустоты, через которую надо прокручиваться
+  // к настоящему дню.
+  const base = visibleHourRange(tasks, settings);
+  const hidden = eventsOutsideRange(events, base.firstHour, base.lastHour);
+
+  // Скрытое показывается не молча: у края висит отметка, и по нажатию сетка
+  // раскрывается ровно в ту сторону, где что-то есть. Молчаливое сокрытие —
+  // худший из вариантов: на телефоне встреча видна в ленте, и два экрана
+  // расходились бы в том, что вообще существует.
+  const { firstHour, lastHour } = visibleHourRange(tasks, settings, [
+    ...(open.before ? hidden.before : []),
+    ...(open.after ? hidden.after : []),
+  ]);
   const hours = Array.from({ length: lastHour - firstHour }, (_, i) => firstHour + i);
   const gridHeight = hours.length * HOUR_HEIGHT;
 
@@ -112,6 +138,14 @@ export function WeekGrid({ from, to, tasks, events, settings, today, onSelect, o
             </div>
           ))}
         </div>
+
+        {hidden.before.length > 0 && !open.before && (
+          <EdgeNotice
+            count={hidden.before.length}
+            direction="before"
+            onClick={() => setExpanded({ ...open, before: true })}
+          />
+        )}
 
         <div
           className="relative grid"
@@ -266,7 +300,43 @@ export function WeekGrid({ from, to, tasks, events, settings, today, onSelect, o
             </div>
           ))}
         </div>
+
+        {hidden.after.length > 0 && !open.after && (
+          <EdgeNotice
+            count={hidden.after.length}
+            direction="after"
+            onClick={() => setExpanded({ ...open, after: true })}
+          />
+        )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Отметка у края сетки: «есть встречи, которых отсюда не видно».
+ *
+ * Кнопка во всю ширину, а не значок: попасть в неё надо пальцем на телефоне,
+ * а мелкие цели в этом проекте уже приводили к промахам. Вид приглушённый,
+ * как у самих встреч, — это подсказка, а не дело в расписании.
+ */
+function EdgeNotice({
+  count,
+  direction,
+  onClick,
+}: {
+  count: number;
+  direction: 'before' | 'after';
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="block w-full touch-manipulation rounded-md border border-hairline bg-surface px-2 py-1.5 text-[11px] text-faint active:bg-hairline"
+    >
+      {direction === 'before' ? '↑' : '↓'} {count} {meetingsWord(count)}{' '}
+      {direction === 'before' ? 'раньше' : 'позже'} — показать
+    </button>
   );
 }
