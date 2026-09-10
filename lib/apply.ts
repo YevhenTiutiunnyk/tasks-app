@@ -61,7 +61,7 @@ export async function applyOperations(
   userId: string,
   text: string,
   operations: Operation[],
-): Promise<{ batchId: string }> {
+): Promise<{ batchId: string; taskIds: string[] }> {
   return sql.begin(async (tx) => {
     const snapshot: Snapshot = { tasks: [], recurrences: [], exceptions: [] };
 
@@ -219,7 +219,16 @@ export async function applyOperations(
         )
     `;
 
-    return { batchId: batch.id as string };
+    // Идентификаторы задач, которых коснулась эта пачка — созданных и
+    // изменённых разом, ровно то, что snapshot.tasks уже и накопил по ходу
+    // применения. Нужны вызывающему для наложения (findOverlaps): сверять
+    // со встречами полагается только то, что реально поменялось этой
+    // фразой, а не вообще все задачи трёхнедельного окна (находка I4
+    // финального ревью). Set убирает дубли — одна и та же задача могла
+    // попасть в snapshot дважды, если пачка трогала её больше одного раза.
+    const taskIds = [...new Set(snapshot.tasks.map((entry) => entry.id))];
+
+    return { batchId: batch.id as string, taskIds };
   });
 }
 

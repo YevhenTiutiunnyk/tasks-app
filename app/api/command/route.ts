@@ -94,8 +94,9 @@ export async function POST(request: Request) {
   }
 
   let batchId: string;
+  let touchedTaskIds: string[];
   try {
-    ({ batchId } = await applyOperations(user.userId, text, checked.operations));
+    ({ batchId, taskIds: touchedTaskIds } = await applyOperations(user.userId, text, checked.operations));
   } catch (error) {
     console.error('applyOperations failed', error);
     return NextResponse.json({ error: 'Не получилось сохранить изменения' }, { status: 500 });
@@ -118,10 +119,16 @@ export async function POST(request: Request) {
   });
 
   // Наложение считаем ПОСЛЕ применения, не до: приложение не спрашивает
-  // разрешения, оно применяет и даёт откатить. По тому же трёхнедельному
-  // диапазону, что и applied выше, — иначе задача, переехавшая за пределы
-  // видимой недели, тихо потеряла бы своё предупреждение.
-  const overlaps = findOverlaps(applied, events);
+  // разрешения, оно применяет и даёт откатить. Но только для задач, которых
+  // коснулась ЭТА фраза, а не для всех задач трёхнедельного окна — иначе
+  // «купи молоко» каждый раз заново показывало бы полный список старых
+  // наложений за три недели, и предупреждение, которое повторяется всегда,
+  // перестают читать (находка I4 финального ревью). taskIds уже назвал,
+  // что именно поменялось; applied ищем в том же трёхнедельном диапазоне,
+  // чтобы задача, переехавшая за пределы видимой недели, не потеряла своё
+  // предупреждение молча.
+  const touchedTasks = applied.filter((task) => touchedTaskIds.includes(task.id));
+  const overlaps = findOverlaps(touchedTasks, events);
 
   return NextResponse.json({
     batchId,
