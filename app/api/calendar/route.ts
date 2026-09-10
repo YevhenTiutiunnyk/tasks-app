@@ -3,6 +3,7 @@ import {
   disconnectCalendars, getCalendars, markCalendarsBroken, markCalendarsHealthy,
   setSelectedCalendars, upsertCalendars,
 } from '@/lib/db';
+import { CalendarAccessLost } from '@/lib/google-api';
 import { getCalendarClient } from '@/lib/google-token';
 import { readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
@@ -27,10 +28,15 @@ export async function GET(request: Request) {
     const client = await getCalendarClient(user.userId);
     await upsertCalendars(user.userId, await client.listCalendars());
     await markCalendarsHealthy(user.userId);
-  } catch {
-    // Разрешения нет или оно отозвано — это не ошибка экрана. Покажем
-    // то, что уже сохранено, и признак «надо подключить заново» (brokenAt).
-    await markCalendarsBroken(user.userId);
+  } catch (error) {
+    // Помечаем сломанным ТОЛЬКО определённую потерю доступа. Любая другая
+    // причина — 500 у Google, обрыв сети, сбой upsertCalendars — не значит
+    // «доступа нет», а сломанный календарь пропускают и планировщик,
+    // и обновление при открытии: ложная пометка тихо выключила бы его на
+    // дни, до ручного похода в настройки (находка второго круга финального
+    // ревью). Прочие ошибки экрана не касаются — покажем то, что уже
+    // сохранено.
+    if (error instanceof CalendarAccessLost) await markCalendarsBroken(user.userId);
   }
 
   const calendars = await getCalendars(user.userId);

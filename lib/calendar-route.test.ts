@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CalendarAccessLost } from '@/lib/google-api';
 
 // Владельца в роутах даёт сессия better-auth. Поднимать её ради проверки
 // роутов незачем — подменяем помощника, как в lib/api-key-route.test.ts.
@@ -8,16 +9,23 @@ vi.mock('@/lib/require-user', () => ({
 }));
 
 // Роут при каждом GET пытается обновить список у Google — реальный поход
-// в API стоит времени и требует настоящего токена. Подменяем модуль целиком
-// и по умолчанию бросаем «доступа нет»: ровно то, что видит роут, когда
-// человек ещё не подключал календарь вовсе.
+// в API стоит времени и требует настоящего токена. Подменяем модуль целиком.
+//
+// 'access-lost' — единственный отказ, который роут вправе счесть потерей
+// доступа (CalendarAccessLost, ровно то, что реально умеет отличать
+// getCalendarClient). 'generic' — любой другой сбой (500 у Google, обрыв
+// сети, что угодно ещё) — до второго круга финального ревью роут ставил
+// пометку «связь сломана» и на него тоже, хотя сломанный календарь
+// пропускают и планировщик, и обновление при открытии: одна сетевая икота
+// тихо выключала бы календарь до ручного похода в настройки.
 const googleToken = vi.hoisted(() => ({
-  fail: true,
+  failWith: 'access-lost' as 'access-lost' | 'generic' | null,
   calendars: [] as { calendarId: string; summary: string }[],
 }));
 vi.mock('@/lib/google-token', () => ({
   getCalendarClient: async () => {
-    if (googleToken.fail) throw new Error('ZZ-нет доступа');
+    if (googleToken.failWith === 'generic') throw new Error('ZZ-сбой сети');
+    if (googleToken.failWith === 'access-lost') throw new CalendarAccessLost();
     return { listCalendars: async () => googleToken.calendars };
   },
 }));
@@ -48,7 +56,7 @@ run('/api/calendar', () => {
     `;
     await sql`delete from google_events where user_id = ${USER_ID}`;
     await sql`delete from google_calendars where user_id = ${USER_ID}`;
-    googleToken.fail = true;
+    googleToken.failWith = 'access-lost';
     googleToken.calendars = [];
   });
 
@@ -76,7 +84,7 @@ run('/api/calendar', () => {
   });
 
   it('PUT сохраняет выбор, GET его возвращает', async () => {
-    googleToken.fail = false;
+    googleToken.failWith = null;
     googleToken.calendars = [
       { calendarId: 'primary', summary: 'ZZ-основной' },
       { calendarId: 'work', summary: 'ZZ-рабочий' },
@@ -98,35 +106,59 @@ run('/api/calendar', () => {
   it('C1: сломанный календарь оживает после удачного GET', async () => {
     // Календарь сначала должен появиться (успешный поход в Google), потом
     // сломаться (неудачный) — и только тогда проверяем оживление.
-    googleToken.fail = false;
+    googleToken.failWith = null;
     googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
     await GET(new Request('http://localhost/api/calendar'));
 
-    googleToken.fail = true;
+    googleToken.failWith = 'access-lost';
     let body = await (await GET(new Request('http://localhost/api/calendar'))).json();
     expect(body.broken).toBe(true);
 
     // Возврат с экрана согласия Google делает ровно этот запрос — удачный
     // GET и есть единственный человеческий сигнал «связь снова жива».
-    googleToken.fail = false;
+    googleToken.failWith = null;
     body = await (await GET(new Request('http://localhost/api/calendar'))).json();
     expect(body.broken).toBe(false);
   });
 
-  it('C1: живой календарь помечается сломанным после неудачного GET', async () => {
-    googleToken.fail = false;
+  it('C1: живой календарь помечается сломанным после отказа CalendarAccessLost', async () => {
+    googleToken.failWith = null;
     googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
     await GET(new Request('http://localhost/api/calendar'));
     let body = await (await GET(new Request('http://localhost/api/calendar'))).json();
     expect(body.broken).toBe(false);
 
-    googleToken.fail = true;
+    googleToken.failWith = 'access-lost';
+    body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(true);
+  });
+
+  it('второй круг, находка 1: голый сбой (не CalendarAccessLost) НЕ помечает связь сломанной', async () => {
+    // 500 у Google на списке календарей, обрыв сети, сбой обновления токена
+    // по другой причине, сбой upsertCalendars — ничего из этого не значит
+    // «доступа нет». Сломанный календарь пропускают и планировщик,
+    // и обновление при открытии — до второго круга финального ревью такая
+    // ложная пометка тихо выключала бы календарь на дни, до ручного похода
+    // в настройки.
+    googleToken.failWith = null;
+    googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
+    await GET(new Request('http://localhost/api/calendar'));
+    let body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(false);
+
+    googleToken.failWith = 'generic';
+    body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(false);
+
+    // А CalendarAccessLost по-прежнему помечает — иначе находка 1 просто
+    // выключила бы C1 вместо того, чтобы сузить её.
+    googleToken.failWith = 'access-lost';
     body = await (await GET(new Request('http://localhost/api/calendar'))).json();
     expect(body.broken).toBe(true);
   });
 
   it('DELETE убирает строки владельца zz-cal-owner', async () => {
-    googleToken.fail = false;
+    googleToken.failWith = null;
     googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
     await GET(new Request('http://localhost/api/calendar'));
 
