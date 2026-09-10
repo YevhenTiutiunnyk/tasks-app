@@ -25,7 +25,7 @@ import { loadRange } from '@/lib/week';
 import { splitIntoDays } from '@/lib/calendar';
 import { runWeeklyReport, type ReportDeps } from '@/lib/report-run';
 import { describeReport } from '@/lib/report';
-import { calendarDeps, syncUser, syncWindow } from '@/lib/calendar-run';
+import { calendarDeps, syncManyUsers, syncWindow } from '@/lib/calendar-run';
 import type { EventDay, Task } from '@/lib/types';
 
 /**
@@ -170,12 +170,17 @@ export async function POST(request: Request) {
   let dueTotal = 0;
   let subscriptionsTotal = 0;
   let reportsSentTotal = 0;
-  let calendarsSyncedTotal = 0;
+
+  // Собирается в основном цикле ниже — календарная стадия идёт отдельным
+  // проходом ПОСЛЕ него (см. вызов syncManyUsers дальше по файлу), и ей
+  // незачем запрашивать часовой пояс из базы второй раз ради того же today.
+  const todayByUser: { userId: string; today: string }[] = [];
 
   for (const userId of userIds) {
     try {
       const [settings, timezone] = await Promise.all([getSettings(userId), getTimezone(userId)]);
       const { today, nowMinute } = nowInZone(timezone);
+      todayByUser.push({ userId, today });
 
       // Завтра нужно потому, что окно перешагивает полночь: задача в 00:05
       // при напоминании за 15 минут требует отправки в 23:50 предыдущего дня.
@@ -225,6 +230,7 @@ export async function POST(request: Request) {
             nowMinute,
             beforeMinutes: settings.notifyBeforeMinutes,
             alreadySent,
+            userId,
           });
         } catch {
           console.error('notify: сбой у одного из владельцев (встречи)');
@@ -248,7 +254,7 @@ export async function POST(request: Request) {
           }
 
           for (const event of dueEvents) {
-            const key = eventKey(event);
+            const key = eventKey(event, userId);
             const payload = JSON.stringify({ ...describe(event, settings.notifyBeforeMinutes), tag: key });
             const count = await sendToAll(userId, subscriptions, payload, 'напоминание');
             sentTotal += count;
@@ -294,22 +300,6 @@ export async function POST(request: Request) {
       } catch {
         console.error('notify: сбой у одного из владельцев (отчёт)');
       }
-
-      // Синхронизация календаря — третья стадия, в своей попытке.
-      // Сбой чтения Google не должен уносить ни напоминания, ни отчёт:
-      // они уже отработали выше и к Google отношения не имеют.
-      try {
-        const calendarResult = await syncUser(calendarDeps, userId, today, new Date());
-        calendarsSyncedTotal += calendarResult.synced;
-        // Сбой отдельного календаря syncUser проглотил, чтобы не уносить
-        // соседние. Но молчать о нём нельзя — иначе стадия будет выглядеть
-        // успешной, ничего не синхронизировав.
-        if (calendarResult.failed > 0) console.error('notify: часть календарей не синхронизирована');
-      } catch {
-        // Ни адреса, ни идентификатора владельца, ни названий встреч:
-        // стадия и всё. Различать её в потоке логов надо по слову.
-        console.error('notify: сбой у одного из владельцев (календарь)');
-      }
     } catch {
       // Сбой у одного не должен оставить остальных без уведомлений — поэтому
       // try/catch внутри тела цикла, а не снаружи него. Эта попытка — только
@@ -318,6 +308,41 @@ export async function POST(request: Request) {
       // стадию здесь нечем.
       console.error('notify: сбой у одного из владельцев (настройка)');
     }
+  }
+
+  /**
+   * Синхронизация календарей — отдельный проход ПОСЛЕ напоминаний и отчёта
+   * всех владельцев, а не стадия внутри их общего цикла.
+   *
+   * Раньше календарь синхронизировался последним для каждого владельца по
+   * очереди, без всякого потолка времени. Роут тикает раз в минуту, и без
+   * бюджета одна лишь долгая стадия (несколько владельцев с полной
+   * перезагрузкой подряд) рисковала растянуть прогон настолько, что
+   * платформа оборвала бы саму функцию по таймауту — тогда без напоминаний
+   * и отчёта остались бы не только оставшиеся календари, а вообще все
+   * владельцы ниже по списку (находка I3 финального ревью). Отдельный
+   * проход после основного цикла делает эту зависимость невозможной
+   * структурно: к моменту, когда календарь вообще начинает синхронизироваться,
+   * напоминания и отчёт уже отработали для каждого владельца из списка.
+   *
+   * 8 секунд — половина дефолтного таймаута серверной функции Vercel
+   * (10 с на Hobby-плане; explicit maxDuration в vercel.json не задан).
+   * Половина оставляет запас на то, что уже потрачено основным циклом
+   * выше, и на завершение уже начатого похода в Google для текущего
+   * владельца. Владельцы, до которых бюджет не дотянул в этот тик, просто
+   * синхронизируются в следующий — список тот же, минута следующая.
+   */
+  const CALENDAR_SYNC_BUDGET_MS = 8000;
+  const calendarResult = await syncManyUsers(
+    calendarDeps, todayByUser, new Date(), CALENDAR_SYNC_BUDGET_MS,
+  );
+  // Сбой отдельного календаря syncManyUsers проглотил, чтобы не уносить
+  // соседние. Но молчать о нём нельзя — иначе стадия будет выглядеть
+  // успешной, ничего не синхронизировав. Ни адреса, ни идентификатора
+  // владельца, ни названий встреч в лог не идёт — только факт и стадия.
+  if (calendarResult.failed > 0) console.error('notify: часть календарей не синхронизирована');
+  if (calendarResult.skipped > 0) {
+    console.error('notify: бюджет времени на синхронизацию календарей исчерпан, часть владельцев пропущена');
   }
 
   try {
@@ -334,6 +359,7 @@ export async function POST(request: Request) {
     due: dueTotal,
     subscriptions: subscriptionsTotal,
     reportsSent: reportsSentTotal,
-    calendarsSynced: calendarsSyncedTotal,
+    calendarsSynced: calendarResult.synced,
+    calendarsSkipped: calendarResult.skipped,
   });
 }

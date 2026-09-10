@@ -1,6 +1,8 @@
 import { expect, test } from 'vitest';
 import { CalendarAccessLost, SyncTokenExpired, type CalendarClient, type ListEventsParams } from './google-api';
-import { needsFullSync, syncCalendar, syncUser, syncWindow, type CalendarDeps } from './calendar-run';
+import {
+  needsFullSync, syncCalendar, syncManyUsers, syncUser, syncWindow, type CalendarDeps,
+} from './calendar-run';
 import type { CalendarRow } from './db';
 import type { CalendarEvent } from './types';
 
@@ -197,6 +199,28 @@ test('отказ второй попытки после протухшего т�
   expect(state.saved.at(-1)!.brokenAt).not.toBeNull();
 });
 
+test('C2: доступ теряется уже при получении клиента — до всякого обхода страниц', async () => {
+  // getCalendarClient (deps.clientFor) бросает CalendarAccessLost ровно
+  // тогда, когда человек отозвал доступ в настройках своего аккаунта
+  // Google. Раньше clientFor/ownerEmail вызывались ДО try — этот отказ
+  // улетал бы мимо обработчика ниже, пометка не появлялась бы вовсе,
+  // а планировщик ходил бы в Google каждую минуту вечно (находка C2
+  // финального ревью).
+  const state: { saved: Parameters<CalendarDeps['saveSyncState']>[2][] } = { saved: [] };
+  const brokenClientDeps: CalendarDeps = {
+    getCalendars: async () => [calendar()],
+    saveSyncState: async (_u, _c, s) => { state.saved.push(s); },
+    upsertEvents: async () => {},
+    deleteEvents: async () => {},
+    replaceCalendarEvents: async () => {},
+    clientFor: async () => { throw new CalendarAccessLost(); },
+    ownerEmail: async () => 'zz-owner@example.invalid',
+  };
+  await expect(syncCalendar(brokenClientDeps, 'zz-user', calendar(), TODAY))
+    .rejects.toBeInstanceOf(CalendarAccessLost);
+  expect(state.saved.at(-1)!.brokenAt).not.toBeNull();
+});
+
 test('успешная синхронизация снимает отметку сломанной связи', async () => {
   const { deps: d, state } = deps({
     listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: 'tok-2' }),
@@ -221,8 +245,10 @@ test('застрявший pageToken обрывает обход отказом,
   // Первый ответ ещё продвигает обход (prev был undefined), второй его
   // повторяет — обрыв обязан случиться именно на нём.
   expect(calls).toBe(2);
-  // Ни токен, ни что-либо ещё не сохранено: обрыв не дошёл до финальных операций.
-  expect(state.saved).toEqual([]);
+  // Токен не тронут (это не «доступ потерян», а свой предохранитель), но
+  // кулдаун обязан взвестись — иначе застрявший календарь дёргался бы на
+  // каждом минутном тике планировщика (находка I3 финального ревью).
+  expect(state.saved).toEqual([{ syncToken: 'tok-1' }]);
 });
 
 test('застрявший pageToken при полной перезагрузке не стирает старую копию', async () => {
@@ -241,7 +267,23 @@ test('застрявший pageToken при полной перезагрузк�
   await expect(syncCalendar(d, 'zz-user', calendar({ syncToken: null }), TODAY)).rejects.toThrow();
   expect(calls).toBe(2);
   expect(state.replaced).toEqual([]);
-  expect(state.saved).toEqual([]);
+  // Кулдаун взводится и здесь — тот же предохранитель, что и у инкрементальной
+  // ветки. Токен у этого календаря изначально null, и таким остаётся.
+  expect(state.saved).toEqual([{ syncToken: null }]);
+});
+
+test('транзиентный сбой (не 401/403 и не 410) не помечает связь сломанной, но взводит кулдаун', async () => {
+  // «Погода, а не беда»: 500 у Google, обрыв сети — sync_token трогать
+  // нельзя, пробуем тем же токеном в следующий раз. Но раньше в этом случае
+  // saveSyncState не вызывался вовсе, и synced_at не обновлялся: отказавший
+  // календарь дёргался планировщиком на каждом минутном тике вместо одного
+  // раза в SYNC_INTERVAL_MS — измерено ревьюером: три обращения за три
+  // минуты вместо одного (находка I3 финального ревью).
+  const { deps: d, state } = deps({
+    listEvents: async () => { throw new Error('Google ответил 500'); },
+  });
+  await expect(syncCalendar(d, 'zz-user', calendar(), TODAY)).rejects.toThrow('Google ответил 500');
+  expect(state.saved).toEqual([{ syncToken: 'tok-1' }]);
 });
 
 test('обход останавливается по потолку страниц, даже если pageToken каждый раз новый', async () => {
@@ -283,4 +325,29 @@ test('syncUser синхронизирует нужные календари и �
   expect(result).toEqual({ synced: 2, failed: 1 });
   // Сбой на 'bad' не должен был остановить обход раньше 'c'.
   expect(seen).toEqual(['a', 'bad', 'c']);
+});
+
+test('syncManyUsers останавливается по бюджету времени, а не по счётчику владельцев', async () => {
+  const now = new Date('2026-09-08T09:10:00.000Z');
+  // Поддельный секундомер: каждый настоящий поход за событиями «стоит»
+  // 5 секунд. Часы — не Date.now(), а управляемый счётчик: тест не должен
+  // гоняться с настоящим временем.
+  let clock = 1_000_000;
+  const { deps: d, state } = deps({
+    listEvents: async () => {
+      clock += 5000;
+      return { events: [], nextPageToken: null, nextSyncToken: 'tok-x' };
+    },
+  });
+  const users = [
+    { userId: 'u1', today: TODAY },
+    { userId: 'u2', today: TODAY },
+    { userId: 'u3', today: TODAY },
+  ];
+  // Бюджет 8с: первый укладывается (0с), второй тоже успевает начаться
+  // (5с ещё меньше 8с), а после него набегает 10с — третий бюджет уже
+  // не застаёт и не должен даже начинаться.
+  const result = await syncManyUsers(d, users, now, 8000, () => clock);
+  expect(result).toEqual({ synced: 2, failed: 0, skipped: 1 });
+  expect(state.calls.length).toBe(2);
 });

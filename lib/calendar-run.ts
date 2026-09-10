@@ -68,9 +68,15 @@ export function needsFullSync(calendar: CalendarRow, today: string): boolean {
 export async function syncCalendar(
   deps: CalendarDeps, userId: string, calendar: CalendarRow, today: string,
 ): Promise<void> {
-  const client = await deps.clientFor(userId);
-  const ownerEmail = await deps.ownerEmail(userId);
   const window = syncWindow(today);
+  // Присваиваются внутри try, а не здесь: deps.clientFor бросает
+  // CalendarAccessLost ровно тогда, когда доступ отозван на стороне Google
+  // (getCalendarClient), и это тот же отказ, что и любой другой в ходе
+  // синхронизации. Вызов до try отправлял бы его мимо обработчика ниже —
+  // пометка не ставилась бы вовсе, а планировщик ходил бы в Google каждую
+  // минуту вечно (находка C2 финального ревью).
+  let client!: CalendarClient;
+  let ownerEmail!: string;
 
   /**
    * Один сквозной обход всех страниц — без замены копии посередине.
@@ -153,8 +159,27 @@ export async function syncCalendar(
     });
   }
 
+  /**
+   * Взвести пятиминутный кулдаун без объявления связи сломанной.
+   *
+   * Используется на отказах, которые не «доступ потерян» (сеть, квота,
+   * 500 у Google, свои предохранители вроде застрявшего pageToken):
+   * такой сбой — это погода, а не беда, и `sync_token` трогать нельзя,
+   * пробуем тем же токеном в следующий раз. Но раньше в этих случаях
+   * `saveSyncState` не вызывался вовсе, `synced_at` не обновлялся,
+   * и syncUser видел календарь «давно не трогали» на каждом минутном
+   * тике планировщика — отказавший календарь дёргался чаще живого
+   * (найдено измерением: три обращения за три минуты вместо одного,
+   * находка I3 финального ревью).
+   */
+  async function markCooldown(): Promise<void> {
+    await deps.saveSyncState(userId, calendar.calendarId, { syncToken: calendar.syncToken });
+  }
+
   const full = needsFullSync(calendar, today);
   try {
+    client = await deps.clientFor(userId);
+    ownerEmail = await deps.ownerEmail(userId);
     await run(full);
   } catch (error) {
     if (!full && error instanceof SyncTokenExpired) {
@@ -170,11 +195,13 @@ export async function syncCalendar(
         await run(true);
       } catch (retryError) {
         if (retryError instanceof CalendarAccessLost) await markBroken();
+        else await markCooldown();
         throw retryError;
       }
       return;
     }
     if (error instanceof CalendarAccessLost) await markBroken();
+    else await markCooldown();
     throw error;
   }
 }
@@ -211,6 +238,50 @@ export async function syncUser(
     }
   }
   return { synced, failed };
+}
+
+/**
+ * Синхронизировать календари многих владельцев с общим бюджетом времени.
+ *
+ * `/api/notify` тикает раз в минуту, и напоминания с отчётом уже честно
+ * отработали для каждого владельца до этого вызова (см. роут) — стадия
+ * календаря идёт отдельным проходом ровно затем, чтобы её собственная долгота
+ * не могла унести за собой обработку кого-то ещё. Без потолка времени
+ * несколько владельцев с полной перезагрузкой подряд рисковали растянуть
+ * стадию настолько, что платформа оборвала бы саму функцию по таймауту —
+ * тогда без напоминаний и отчёта остались бы уже не только оставшиеся
+ * календари, а вообще все, кто ниже по списку (находка I3 финального
+ * ревью). Владельцы, до которых бюджет не дотянул в этот тик, просто
+ * синхронизируются в следующий — список тот же, минута следующая.
+ *
+ * `clock` — параметр, а не Date.now() внутри тела: тесту нужен предсказуемый
+ * поддельный секундомер, а не гонка с настоящими часами.
+ */
+export async function syncManyUsers(
+  deps: CalendarDeps,
+  users: { userId: string; today: string }[],
+  now: Date,
+  budgetMs: number,
+  clock: () => number = Date.now,
+): Promise<{ synced: number; failed: number; skipped: number }> {
+  const startedAt = clock();
+  let synced = 0;
+  let failed = 0;
+  let skipped = 0;
+  for (const { userId, today } of users) {
+    if (clock() - startedAt >= budgetMs) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const result = await syncUser(deps, userId, today, now);
+      synced += result.synced;
+      failed += result.failed;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { synced, failed, skipped };
 }
 
 /**
