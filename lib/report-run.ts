@@ -56,7 +56,7 @@ async function planFor(deps: ReportDeps, userId: string, weekStart: string) {
     deps.getChecklistTasks(userId, 'week', weekStart),
     deps.getWeekEvents(userId, weekStart),
   ]);
-  return [...planFromTasks([...days, ...weekly]), ...planFromEvents(events)];
+  return [...planFromTasks([...days, ...weekly]), ...planFromEvents(events, userId)];
 }
 
 /** Задачи без повторов по идентификатору: списки ниже пересекаются. */
@@ -123,6 +123,7 @@ export async function runWeeklyReport(
         current: unique([...inWeek, ...weekly, ...byId]),
         monthLeft: month.filter((task) => !task.done),
         currentEvents,
+        userId,
       });
 
       // Сохраняем всегда, даже пустой: иначе запуск раз в минуту будет

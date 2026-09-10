@@ -114,11 +114,23 @@ export function selectDue(input: SelectDueInput): Task[] {
  * уникальными ключами и уборкой старых записей. Второй способ делать
  * то же самое означал бы вторую уборку, которую однажды забудут.
  *
- * Календарь в ключе обязателен: одно и то же событие видно в двух
- * календарях под одним идентификатором.
+ * Владелец в ключе обязателен, а не только календарь: общий календарь
+ * (семейный, рабочий) виден нескольким людям сразу под одним и тем же
+ * calendarId/eventId, а таблица `sent` — общая на всех, без колонки
+ * владельца. Без него кто первым получил напоминание, тот и записал бы
+ * ключ — второй владелец не получил бы его никогда (находка I2 финального
+ * ревью). Заодно calendarId основного календаря — это адрес человека,
+ * и без разделения по владельцу адреса всех владельцев складывались бы
+ * в одну глобально читаемую таблицу.
+ *
+ * Части соединяются через encodeURIComponent, а не голым `:`: идентификаторы
+ * Google колонов не несут, но кодирование убирает саму возможность слияния
+ * частей — после него в каждом сегменте физически не может остаться
+ * неэкранированного `:`, и разбор ключа по разделителю остаётся однозначным
+ * при любом будущем источнике идентификаторов.
  */
-export function eventKey(event: EventDay): string {
-  return `gcal:${event.calendarId}:${event.eventId}`;
+export function eventKey(event: Pick<EventDay, 'calendarId' | 'eventId'>, userId: string): string {
+  return `gcal:${encodeURIComponent(userId)}:${encodeURIComponent(event.calendarId)}:${encodeURIComponent(event.eventId)}`;
 }
 
 /**
@@ -131,13 +143,15 @@ export function selectDueEvents(input: {
   nowMinute: number;
   beforeMinutes: number;
   alreadySent: ReadonlySet<string>;
+  /** Владелец — часть ключа отметки, см. eventKey. */
+  userId: string;
 }): EventDay[] {
-  const { events, today, nowMinute, beforeMinutes, alreadySent } = input;
+  const { events, today, nowMinute, beforeMinutes, alreadySent, userId } = input;
 
   return events.filter((event) => {
     // События на весь день — молча, как и задачи на весь день выше.
     if (event.allDay || event.startMinute === null) return false;
-    if (alreadySent.has(eventKey(event))) return false;
+    if (alreadySent.has(eventKey(event, userId))) return false;
 
     const offset = dayOffset(today, event.date);
     if (offset === null) return false;

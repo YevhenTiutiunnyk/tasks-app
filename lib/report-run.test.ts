@@ -150,7 +150,7 @@ describe('runWeeklyReport', () => {
     );
     expect(saveWeekSnapshot).toHaveBeenCalledWith('u', MONDAY, [
       { id: 'a', title: 'Кран' },
-      { id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: true },
+      { id: 'gcal:u:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: true },
     ]);
   });
 
@@ -162,7 +162,7 @@ describe('runWeeklyReport', () => {
           week === PREV
             ? {
                 weekStart: PREV,
-                planned: [{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }],
+                planned: [{ id: 'gcal:u:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }],
                 report: null,
                 reportedAt: null,
               }
@@ -173,7 +173,7 @@ describe('runWeeklyReport', () => {
       }),
       'u', MONDAY, 600, 540,
     );
-    expect(report?.eventsHeld).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
+    expect(report?.eventsHeld).toEqual([{ id: 'gcal:u:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
   });
 
   it('встреча, уехавшая в другую неделю, — «перенесена», а не «отменена»', async () => {
@@ -189,7 +189,7 @@ describe('runWeeklyReport', () => {
           week === PREV
             ? {
                 weekStart: PREV,
-                planned: [{ id: 'gcal:primary:e1', title: 'ZZ-уехала', kind: 'event', mine: false }],
+                planned: [{ id: 'gcal:u:primary:e1', title: 'ZZ-уехала', kind: 'event', mine: false }],
                 report: null,
                 reportedAt: null,
               }
@@ -201,7 +201,7 @@ describe('runWeeklyReport', () => {
       }),
       'u', MONDAY, 600, 540,
     );
-    expect(report?.eventsMoved).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-уехала', kind: 'event', mine: false }]);
+    expect(report?.eventsMoved).toEqual([{ id: 'gcal:u:primary:e1', title: 'ZZ-уехала', kind: 'event', mine: false }]);
     expect(report?.eventsCancelled).toEqual([]);
   });
 
@@ -216,7 +216,7 @@ describe('runWeeklyReport', () => {
           week === PREV
             ? {
                 weekStart: PREV,
-                planned: [{ id: 'gcal:primary:e1', title: 'ZZ-отменена', kind: 'event', mine: false }],
+                planned: [{ id: 'gcal:u:primary:e1', title: 'ZZ-отменена', kind: 'event', mine: false }],
                 report: null,
                 reportedAt: null,
               }
@@ -226,7 +226,7 @@ describe('runWeeklyReport', () => {
       }),
       'u', MONDAY, 600, 540,
     );
-    expect(report?.eventsCancelled).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-отменена', kind: 'event', mine: false }]);
+    expect(report?.eventsCancelled).toEqual([{ id: 'gcal:u:primary:e1', title: 'ZZ-отменена', kind: 'event', mine: false }]);
     expect(report?.eventsMoved).toEqual([]);
   });
 

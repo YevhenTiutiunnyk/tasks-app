@@ -33,14 +33,24 @@ function short(task: Task): PlannedTask {
  * пометкой вида и принадлежности. `mine` кладём как есть — у встречи он
  * всегда есть, в отличие от задач, где отсутствие поля само по себе значит
  * «своё».
+ *
+ * Схлопывает по идентификатору встречи, а не мапит каждый вход как есть:
+ * многодневное событие (отпуск на пять дней) и событие через полночь
+ * приходят несколькими дневными кусками с ОДНИМ и тем же eventKey — без
+ * схлопывания отпуск на пять дней превращался бы в «5 встреч» в отчёте,
+ * а «/report» рисовал бы одну строку несколько раз с одинаковым React-ключом
+ * (находка I1 финального ревью). Тот же приём, что unique() в
+ * lib/report-run.ts для задач.
  */
-export function planFromEvents(events: EventDay[]): PlannedTask[] {
-  return events.map((event) => ({
-    id: eventKey(event),
-    title: event.title,
-    kind: 'event',
-    mine: event.mine,
-  }));
+export function planFromEvents(events: EventDay[], userId: string): PlannedTask[] {
+  const byId = new Map<string, PlannedTask>();
+  for (const event of events) {
+    const id = eventKey(event, userId);
+    if (!byId.has(id)) {
+      byId.set(id, { id, title: event.title, kind: 'event', mine: event.mine });
+    }
+  }
+  return [...byId.values()];
 }
 
 /**
@@ -87,8 +97,15 @@ export function buildReport(input: {
   monthLeft: Task[];
   /** Текущие встречи прошлой недели — по ним видно, что состоялось, а что нет. */
   currentEvents?: EventDay[];
+  /**
+   * Владелец — часть ключа встречи (см. eventKey), нужен только для
+   * сравнения plannedEvents с currentEvents. Необязателен: снимок без
+   * событий (в том числе снимки, записанные до появления календаря)
+   * этим полем не пользуется вовсе.
+   */
+  userId?: string;
 }): WeeklyReport {
-  const { planned, weekFrom, weekTo, current, monthLeft, currentEvents = [] } = input;
+  const { planned, weekFrom, weekTo, current, monthLeft, currentEvents = [], userId = '' } = input;
   const report: WeeklyReport = {
     done: [], notDone: [], postponed: [], removed: [], extra: [],
     monthLeft: monthLeft.map(short),
@@ -124,7 +141,7 @@ export function buildReport(input: {
   }
 
   for (const entry of plannedEvents) {
-    const event = currentEvents.find((candidate) => eventKey(candidate) === entry.id);
+    const event = currentEvents.find((candidate) => eventKey(candidate, userId) === entry.id);
     if (!event) {
       report.eventsCancelled.push(entry);
     } else if (event.date >= weekFrom && event.date <= weekTo) {

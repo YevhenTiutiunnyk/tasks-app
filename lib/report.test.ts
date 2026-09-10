@@ -233,26 +233,46 @@ describe('встречи в отчёте', () => {
     const planned = planFromEvents([{
       calendarId: 'primary', eventId: 'e1', title: 'ZZ-созвон', date: '2026-09-09',
       startMinute: 600, durationMinutes: 60, allDay: false, mine: false,
-    }]);
-    expect(planned).toEqual([{ id: 'gcal:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
+    }], 'zz-owner');
+    expect(planned).toEqual([{ id: 'gcal:zz-owner:primary:e1', title: 'ZZ-созвон', kind: 'event', mine: false }]);
+  });
+
+  it('многодневная и полуночная встреча схлопывается в одну запись снимка', () => {
+    // Раскладка по дням даёт несколько кусков с ОДНИМ и тем же eventKey:
+    // отпуск на три дня — три куска, созвон через полночь — два. Без
+    // схлопывания это читалось бы как «3 встречи» и «2 встречи» вместо
+    // одной каждая (находка I1 финального ревью).
+    const trip = ['2026-09-07', '2026-09-08', '2026-09-09'].map((date) => ({
+      calendarId: 'primary', eventId: 'trip', title: 'ZZ-отпуск', date,
+      startMinute: null, durationMinutes: null, allDay: true, mine: true,
+    }));
+    const overnight = [
+      { calendarId: 'primary', eventId: 'call', title: 'ZZ-полуночный-созвон', date: '2026-09-09', startMinute: 1380, durationMinutes: 60, allDay: false, mine: false },
+      { calendarId: 'primary', eventId: 'call', title: 'ZZ-полуночный-созвон', date: '2026-09-10', startMinute: 0, durationMinutes: 60, allDay: false, mine: false },
+    ];
+    const planned = planFromEvents([...trip, ...overnight], 'zz-owner');
+    expect(planned).toHaveLength(2);
+    expect(planned.map((entry) => entry.id).sort()).toEqual(
+      ['gcal:zz-owner:primary:call', 'gcal:zz-owner:primary:trip'].sort(),
+    );
   });
 
   it('встреча состоялась, уехала и отменилась', () => {
     const planned = [
-      { id: 'gcal:primary:held', title: 'ZZ-состоялась', kind: 'event' as const, mine: true },
-      { id: 'gcal:primary:moved', title: 'ZZ-уехала', kind: 'event' as const, mine: false },
-      { id: 'gcal:primary:gone', title: 'ZZ-отменена', kind: 'event' as const, mine: false },
+      { id: 'gcal:zz-owner:primary:held', title: 'ZZ-состоялась', kind: 'event' as const, mine: true },
+      { id: 'gcal:zz-owner:primary:moved', title: 'ZZ-уехала', kind: 'event' as const, mine: false },
+      { id: 'gcal:zz-owner:primary:gone', title: 'ZZ-отменена', kind: 'event' as const, mine: false },
     ];
     const report = buildReport({
-      planned, weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [],
+      planned, weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [], userId: 'zz-owner',
       currentEvents: [
         { calendarId: 'primary', eventId: 'held', title: 'ZZ-состоялась', date: '2026-09-09', startMinute: 600, durationMinutes: 60, allDay: false, mine: true },
         { calendarId: 'primary', eventId: 'moved', title: 'ZZ-уехала', date: '2026-09-20', startMinute: 600, durationMinutes: 60, allDay: false, mine: false },
       ],
     });
-    expect(report.eventsHeld.map((entry) => entry.id)).toEqual(['gcal:primary:held']);
-    expect(report.eventsMoved.map((entry) => entry.id)).toEqual(['gcal:primary:moved']);
-    expect(report.eventsCancelled.map((entry) => entry.id)).toEqual(['gcal:primary:gone']);
+    expect(report.eventsHeld.map((entry) => entry.id)).toEqual(['gcal:zz-owner:primary:held']);
+    expect(report.eventsMoved.map((entry) => entry.id)).toEqual(['gcal:zz-owner:primary:moved']);
+    expect(report.eventsCancelled.map((entry) => entry.id)).toEqual(['gcal:zz-owner:primary:gone']);
   });
 
   it('старый снимок без kind читается как задачи', () => {
@@ -271,10 +291,10 @@ describe('встречи в отчёте', () => {
   it('текст пуша называет встречи и чужие переносы', () => {
     const report = buildReport({
       planned: [
-        { id: 'gcal:primary:a', title: 'ZZ-1', kind: 'event' as const, mine: true },
-        { id: 'gcal:primary:b', title: 'ZZ-2', kind: 'event' as const, mine: false },
+        { id: 'gcal:zz-owner:primary:a', title: 'ZZ-1', kind: 'event' as const, mine: true },
+        { id: 'gcal:zz-owner:primary:b', title: 'ZZ-2', kind: 'event' as const, mine: false },
       ],
-      weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [],
+      weekFrom: '2026-09-07', weekTo: '2026-09-13', current: [], monthLeft: [], userId: 'zz-owner',
       currentEvents: [
         { calendarId: 'primary', eventId: 'a', title: 'ZZ-1', date: '2026-09-09', startMinute: 600, durationMinutes: 60, allDay: false, mine: true },
       ],

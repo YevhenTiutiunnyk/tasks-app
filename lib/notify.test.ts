@@ -159,7 +159,7 @@ function eventDay(patch: Partial<EventDay> = {}): EventDay {
 test('встреча попадает в отбор так же, как задача', () => {
   const due = selectDueEvents({
     events: [eventDay()], today: '2026-09-09', nowMinute: 590,
-    beforeMinutes: 15, alreadySent: new Set(),
+    beforeMinutes: 15, alreadySent: new Set(), userId: 'zz-owner',
   });
   expect(due).toHaveLength(1);
 });
@@ -174,20 +174,30 @@ test('событие на весь день завтра не будит тел�
   // ловит его в последние 15 минут сегодняшних суток — 23:45–23:59.
   const due = selectDueEvents({
     events: [eventDay({ allDay: true, startMinute: null, durationMinutes: null, date: '2026-09-10' })],
-    today: '2026-09-09', nowMinute: 23 * 60 + 50, beforeMinutes: 15, alreadySent: new Set(),
+    today: '2026-09-09', nowMinute: 23 * 60 + 50, beforeMinutes: 15, alreadySent: new Set(), userId: 'zz-owner',
   });
   expect(due).toEqual([]);
 });
 
 test('ключ отправки различает календари', () => {
-  expect(eventKey(eventDay())).toBe('gcal:primary:e1');
-  expect(eventKey(eventDay({ calendarId: 'work' }))).not.toBe(eventKey(eventDay()));
+  expect(eventKey(eventDay(), 'zz-owner')).toBe('gcal:zz-owner:primary:e1');
+  expect(eventKey(eventDay({ calendarId: 'work' }), 'zz-owner')).not.toBe(eventKey(eventDay(), 'zz-owner'));
+});
+
+test('ключ отправки различает владельцев — общий календарь не течёт между ними', () => {
+  // Семейный или рабочий календарь виден нескольким людям под одним и тем же
+  // calendarId/eventId. Без владельца в ключе тот, кто первым получил
+  // напоминание, записал бы общий ключ в таблицу `sent», и второй владелец
+  // того же события не получил бы напоминание никогда (находка I2
+  // финального ревью).
+  const event = eventDay();
+  expect(eventKey(event, 'owner-a')).not.toBe(eventKey(event, 'owner-b'));
 });
 
 test('уже отправленное не повторяется', () => {
   const due = selectDueEvents({
     events: [eventDay()], today: '2026-09-09', nowMinute: 590,
-    beforeMinutes: 15, alreadySent: new Set(['gcal:primary:e1']),
+    beforeMinutes: 15, alreadySent: new Set(['gcal:zz-owner:primary:e1']), userId: 'zz-owner',
   });
   expect(due).toEqual([]);
 });
