@@ -61,7 +61,7 @@ export async function applyOperations(
   userId: string,
   text: string,
   operations: Operation[],
-): Promise<{ batchId: string; taskIds: string[] }> {
+): Promise<{ batchId: string; taskIds: string[]; createdRecurrenceIds: string[] }> {
   return sql.begin(async (tx) => {
     const snapshot: Snapshot = { tasks: [], recurrences: [], exceptions: [] };
 
@@ -228,7 +228,18 @@ export async function applyOperations(
     // попасть в snapshot дважды, если пачка трогала её больше одного раза.
     const taskIds = [...new Set(snapshot.tasks.map((entry) => entry.id))];
 
-    return { batchId: batch.id as string, taskIds };
+    // Правила повтора, заведённые этой же пачкой. Их вхождения в
+    // загруженном диапазоне — синтетические записи вида
+    // occ:<правило>:<дата> (см. lib/recurrence.ts), заводятся на лету при
+    // раскрытии и в snapshot.tasks никогда не попадают: материализация
+    // случается только при точечной правке или удалении конкретного дня.
+    // Без этого списка «тренировка по понедельникам 10:30» поверх встречи
+    // не показала бы предупреждение вовсе — регрессия, найденная во втором
+    // круге финального ревью (находка 2): наложение для только что
+    // созданного повтора попросту не с чем было сверить.
+    const createdRecurrenceIds = [...new Set(snapshot.recurrences)];
+
+    return { batchId: batch.id as string, taskIds, createdRecurrenceIds };
   });
 }
 

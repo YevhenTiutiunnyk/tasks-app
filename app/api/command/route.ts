@@ -95,8 +95,10 @@ export async function POST(request: Request) {
 
   let batchId: string;
   let touchedTaskIds: string[];
+  let createdRecurrenceIds: string[];
   try {
-    ({ batchId, taskIds: touchedTaskIds } = await applyOperations(user.userId, text, checked.operations));
+    ({ batchId, taskIds: touchedTaskIds, createdRecurrenceIds } =
+      await applyOperations(user.userId, text, checked.operations));
   } catch (error) {
     console.error('applyOperations failed', error);
     return NextResponse.json({ error: 'Не получилось сохранить изменения' }, { status: 500 });
@@ -127,7 +129,17 @@ export async function POST(request: Request) {
   // что именно поменялось; applied ищем в том же трёхнедельном диапазоне,
   // чтобы задача, переехавшая за пределы видимой недели, не потеряла своё
   // предупреждение молча.
-  const touchedTasks = applied.filter((task) => touchedTaskIds.includes(task.id));
+  //
+  // Вхождения только что заведённого повтора отдельным условием: у них
+  // синтетический id (occ:<правило>:<дата>), которого в touchedTaskIds
+  // никогда нет — материализация случается только при точечной правке
+  // конкретного дня. Без второго условия «тренировка по понедельникам
+  // 10:30» поверх встречи не показывала бы предупреждение вовсе (находка 2
+  // второго круга финального ревью).
+  const touchedTasks = applied.filter((task) =>
+    touchedTaskIds.includes(task.id)
+    || (task.recurrenceId !== null && createdRecurrenceIds.includes(task.recurrenceId)),
+  );
   const overlaps = findOverlaps(touchedTasks, events);
 
   return NextResponse.json({

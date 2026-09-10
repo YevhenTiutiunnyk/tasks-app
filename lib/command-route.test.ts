@@ -72,6 +72,8 @@ run('/api/command — I4: наложение только по изменённ�
     await sql`delete from tasks where user_id = ${USER_ID}`;
     await sql`delete from command_log where user_id = ${USER_ID}`;
     await sql`delete from google_events where user_id = ${USER_ID}`;
+    // recurrence_exceptions уходит каскадом за recurrences (on delete cascade).
+    await sql`delete from recurrences where user_id = ${USER_ID}`;
 
     // Встреча 09:00–10:00 UTC = 10:00–11:00 по Амстердаму (март, ещё зима).
     await sql`
@@ -95,6 +97,7 @@ run('/api/command — I4: наложение только по изменённ�
     await sql`delete from tasks where user_id = ${USER_ID}`;
     await sql`delete from command_log where user_id = ${USER_ID}`;
     await sql`delete from google_events where user_id = ${USER_ID}`;
+    await sql`delete from recurrences where user_id = ${USER_ID}`;
     await sql`delete from google_calendars where user_id = ${USER_ID}`;
     await sql`delete from user_api_keys where user_id = ${USER_ID}`;
     // Роут пишет пояс при первом же POST (см. saveTimezone в app/api/command/route.ts).
@@ -112,5 +115,43 @@ run('/api/command — I4: наложение только по изменённ�
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.overlaps).toEqual([]);
+  });
+
+  // Находка 3 второго круга финального ревью: положительный случай не был
+  // закрыт ничем — обнуление списка затронутых задач в роуте (то есть
+  // полное выключение функции) оставляло все тесты зелёными.
+  it('фраза, создавшая задачу поверх встречи, показывает наложение с обоими названиями', async () => {
+    parseMock.operations = [{
+      type: 'create', title: 'ZZ-Врач', date: TODAY, startMinute: 600, durationMinutes: 60,
+      allDay: false, categoryId: null, recurrence: null, horizon: null,
+    }];
+
+    const response = await post('запиши к врачу в 10');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.overlaps).toEqual([{ taskTitle: 'ZZ-Врач', eventTitle: 'ZZ-Событие' }]);
+  });
+
+  // Находка 2 второго круга финального ревью: create с recurrence кладёт
+  // идентификатор только в snapshot.recurrences, а вхождения серии в
+  // загруженном диапазоне — синтетические (occ:<правило>:<дата>), их нет
+  // в snapshot.tasks никогда. Ревьюер проверил на живой базе: фраза
+  // «тренировка по понедельникам 10:30» поверх встречи 10:00–11:00 давала
+  // ПУСТОЙ список наложений вместо верного предупреждения — регрессия,
+  // а не убранный шум.
+  it('вхождение только что созданного повтора проверяется на наложение', async () => {
+    parseMock.operations = [{
+      type: 'create', title: 'ZZ-Тренировка', date: null, startMinute: 630, durationMinutes: 60,
+      allDay: false, categoryId: null,
+      // TODAY — понедельник (weekday 1); правило стартует в тот же день,
+      // поэтому первое же вхождение приходится ровно на TODAY.
+      recurrence: { weekdays: [1], startsOn: TODAY, endsOn: null },
+      horizon: null,
+    }];
+
+    const response = await post('тренировка по понедельникам 10:30');
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.overlaps).toEqual([{ taskTitle: 'ZZ-Тренировка', eventTitle: 'ZZ-Событие' }]);
   });
 });
