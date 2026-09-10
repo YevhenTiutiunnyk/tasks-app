@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { diffExport, eventTitle, exportWindow, exportableTasks, fingerprintOf } from './export';
+import { diffExport, draftFor, eventTitle, exportWindow, exportableTasks, fingerprintOf } from './export';
 import type { Task } from './types';
 import type { ExportLink } from './db';
 
@@ -95,4 +95,35 @@ test('вхождение повтора связывается по своему
     [link({ taskKey: 'occ:rule-1:2026-09-10', fingerprint: fingerprintOf(occurrence) })],
   );
   expect(diff).toEqual({ create: [], update: [], remove: [] });
+});
+
+test('черновик события — стенные часы плюс имя пояса, без абсолютного времени', () => {
+  const draft = draftFor(task(), 'Europe/Amsterdam');
+  expect(draft).toEqual({
+    summary: 'ZZ-тренировка',
+    startDate: '2026-09-10',
+    startMinute: 600,
+    endDate: '2026-09-10',
+    endMinute: 660,
+    timeZone: 'Europe/Amsterdam',
+    taskKey: 't1',
+  });
+});
+
+test('задача без длительности считается часовой', () => {
+  expect(draftFor(task({ durationMinutes: null }), 'Europe/Amsterdam').endMinute).toBe(660);
+});
+
+// Задача может кончаться за полночь: 23:30 плюс полтора часа. Конец обязан
+// переехать на следующий день, иначе Google получит конец раньше начала.
+test('задача, переваливающая за полночь, кончается на следующий день', () => {
+  const late = task({ startMinute: 1410, durationMinutes: 90 });
+  const draft = draftFor(late, 'Europe/Amsterdam');
+  expect(draft.startDate).toBe('2026-09-10');
+  expect(draft.endDate).toBe('2026-09-11');
+  expect(draft.endMinute).toBe(60);
+});
+
+test('выполненная задача уезжает с галочкой', () => {
+  expect(draftFor(task({ done: true }), 'Europe/Amsterdam').summary).toBe('✓ ZZ-тренировка');
 });

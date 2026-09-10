@@ -98,3 +98,42 @@ export function diffExport(tasks: Task[], links: ExportLink[]): ExportDiff {
 
   return diff;
 }
+
+const MINUTES_PER_DAY = 1440;
+const DEFAULT_DURATION_MINUTES = 60;
+
+export interface EventDraft {
+  summary: string;
+  startDate: string;
+  startMinute: number;
+  endDate: string;
+  endMinute: number;
+  timeZone: string;
+  taskKey: string;
+}
+
+/**
+ * Задача в том виде, в каком её примет Google.
+ *
+ * Абсолютное время не считаем: Google принимает стенные часы и отдельно
+ * имя пояса, а перевод делает сам. Правило проекта «дата строкой, время
+ * минутами, никаких Date» остаётся в силе, и переход на летнее время
+ * считает тот, у кого для этого есть база поясов.
+ */
+export function draftFor(task: Task, timeZone: string): EventDraft {
+  const startMinute = task.startMinute!;
+  const end = startMinute + (task.durationMinutes ?? DEFAULT_DURATION_MINUTES);
+  // Задача может кончаться за полночь. Без переноса даты Google получил бы
+  // конец раньше начала и отказал бы.
+  const overnight = end >= MINUTES_PER_DAY;
+
+  return {
+    summary: eventTitle(task),
+    startDate: task.date,
+    startMinute,
+    endDate: overnight ? addDays(task.date, 1) : task.date,
+    endMinute: overnight ? end - MINUTES_PER_DAY : end,
+    timeZone,
+    taskKey: task.id,
+  };
+}

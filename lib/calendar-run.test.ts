@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { CalendarAccessLost, SyncTokenExpired, type CalendarClient, type ListEventsParams } from './google-api';
+import { CalendarAccessLost, CalendarGone, SyncTokenExpired, type CalendarClient, type ListEventsParams } from './google-api';
 import {
   copyWindow, needsFullSync, syncCalendar, syncManyUsers, syncUser, syncWindow, type CalendarDeps,
 } from './calendar-run';
@@ -53,6 +53,14 @@ function deps(client: Partial<CalendarClient>, calendars: CalendarRow[] = [calen
         state.order.push('listEvents');
         return listEvents(calendarId, params);
       },
+      // Запись в Google — не дело синхронизации чужих календарей: она только
+      // читает. Заглушки бросают, а не молчат, чтобы случайный вызов отсюда
+      // был виден сразу, а не выглядел удачной записью в пустоту.
+      createCalendar: async () => { throw new Error('синхронизация не пишет в Google'); },
+      deleteCalendar: async () => { throw new Error('синхронизация не пишет в Google'); },
+      insertEvent: async () => { throw new Error('синхронизация не пишет в Google'); },
+      patchEvent: async () => { throw new Error('синхронизация не пишет в Google'); },
+      deleteEvent: async () => { throw new Error('синхронизация не пишет в Google'); },
     }),
     ownerEmail: async () => 'zz-owner@example.invalid',
   };
@@ -367,4 +375,15 @@ test('syncManyUsers останавливается по бюджету врем�
   const result = await syncManyUsers(d, users, now, 8000, () => clock);
   expect(result).toEqual({ synced: 2, failed: 0, skipped: 1 });
   expect(state.calls.length).toBe(2);
+});
+
+// Ветка 404 → CalendarGone добавлена в общую call ради записи, но через ту же
+// call ходят и чтения. Раньше 404 при чтении был обычной Error и уводил
+// в кулдаун; так обязано остаться: пометка «связь сломана» выключает
+// календарь до ручного похода в настройки, а исчезнувший календарь — это
+// не потеря доступа.
+test('исчезнувший календарь (CalendarGone) не помечает связь сломанной', async () => {
+  const { deps: d, state } = deps({ listEvents: async () => { throw new CalendarGone(); } });
+  await expect(syncCalendar(d, 'zz-user', calendar(), TODAY)).rejects.toBeInstanceOf(CalendarGone);
+  expect(state.saved.at(-1)!.brokenAt).toBeUndefined();
 });
