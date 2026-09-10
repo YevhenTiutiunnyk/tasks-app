@@ -1,4 +1,5 @@
 import { eventKey } from './notify';
+import { meetingsWord } from './format';
 import { parseOccurrenceId } from './recurrence';
 import type { EventDay, Task } from './types';
 
@@ -173,15 +174,6 @@ export function isReportEmpty(report: WeeklyReport): boolean {
     report.eventsMoved.length === 0 &&
     report.eventsCancelled.length === 0
   );
-}
-
-/** Склонение «встреча/встречи/встреч» для количества N. */
-function meetingsWord(count: number): string {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod10 === 1 && mod100 !== 11) return 'встреча';
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'встречи';
-  return 'встреч';
 }
 
 /**

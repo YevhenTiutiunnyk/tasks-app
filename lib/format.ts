@@ -101,3 +101,19 @@ export function formatDayLabel(iso: string, weekday: number): string {
 export function formatDayHeading(iso: string, weekday: number): string {
   return `${WEEKDAY_FULL[weekday - 1]}, ${Number(iso.slice(8, 10))} ${MONTH_SHORT[Number(iso.slice(5, 7)) - 1]}`;
 }
+
+/**
+ * Склонение «встреча/встречи/встреч» для количества N.
+ *
+ * Живёт здесь, а не в отчёте, потому что нужно и отчёту, и недельной сетке:
+ * две копии этого правила разошлись бы на первой же правке, а расходятся
+ * такие вещи молча — числа 11–14 ведут себя не как 1–4, и заметить подмену
+ * на глаз почти нельзя.
+ */
+export function meetingsWord(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'встреча';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'встречи';
+  return 'встреч';
+}

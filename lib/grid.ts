@@ -35,3 +35,43 @@ export function visibleHourRange(
 
   return { firstHour, lastHour };
 }
+
+/** Встречи, целиком выпавшие за края видимого диапазона сетки. */
+export interface HiddenEvents {
+  before: EventDay[];
+  after: EventDay[];
+}
+
+/**
+ * Какие встречи не поместились в показанный диапазон часов.
+ *
+ * Нужна, чтобы сетка могла честно сказать «есть встречи выше» вместо того,
+ * чтобы растягиваться на все сутки из-за одного ночного перелёта. Растяжение
+ * честно, но дорого: девять часов пустой ночи ради полутора часов дела.
+ *
+ * Считается только то, что не видно СОВСЕМ. Встреча, задевающая край хотя бы
+ * краем, на экране присутствует, и объявлять её скрытой значило бы звать
+ * человека раскрывать то, что он и так видит.
+ *
+ * Дела на весь день сюда не попадают никогда: они живут в своей полосе над
+ * сеткой и от диапазона часов не зависят.
+ */
+export function eventsOutsideRange(
+  events: EventDay[],
+  firstHour: number,
+  lastHour: number,
+): HiddenEvents {
+  const from = firstHour * 60;
+  const to = lastHour * 60;
+  const hidden: HiddenEvents = { before: [], after: [] };
+
+  for (const event of events) {
+    if (event.allDay || event.startMinute === null) continue;
+    const start = event.startMinute;
+    const end = start + (event.durationMinutes ?? DEFAULT_DURATION_MINUTES);
+    if (end <= from) hidden.before.push(event);
+    else if (start >= to) hidden.after.push(event);
+  }
+
+  return hidden;
+}
