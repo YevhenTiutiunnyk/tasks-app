@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
-import { eventTitle, exportWindow, exportableTasks, fingerprintOf } from './export';
+import { diffExport, eventTitle, exportWindow, exportableTasks, fingerprintOf } from './export';
 import type { Task } from './types';
+import type { ExportLink } from './db';
 
 function task(patch: Partial<Task> = {}): Task {
   return {
@@ -53,4 +54,45 @@ test('отпечаток не меняется от полей, которые �
 
 test('отпечаток устойчив: одна и та же задача даёт одно и то же значение', () => {
   expect(fingerprintOf(task())).toBe(fingerprintOf(task()));
+});
+
+function link(patch: Partial<ExportLink> = {}): ExportLink {
+  return { taskKey: 't1', eventId: 'e1', fingerprint: 'старый', ...patch };
+}
+
+test('задача без связки идёт на создание', () => {
+  const diff = diffExport([task()], []);
+  expect(diff.create.map((item) => item.id)).toEqual(['t1']);
+  expect(diff.update).toEqual([]);
+  expect(diff.remove).toEqual([]);
+});
+
+test('разошедшийся отпечаток идёт на правку, с идентификатором события', () => {
+  const diff = diffExport([task()], [link()]);
+  expect(diff.update).toEqual([{ task: task(), eventId: 'e1' }]);
+  expect(diff.create).toEqual([]);
+});
+
+test('совпавший отпечаток не даёт ни одной операции', () => {
+  const current = task();
+  const diff = diffExport([current], [link({ fingerprint: fingerprintOf(current) })]);
+  expect(diff).toEqual({ create: [], update: [], remove: [] });
+});
+
+test('связка без задачи идёт на удаление', () => {
+  const orphan = link({ taskKey: 't-исчезла', eventId: 'e-исчезла' });
+  const diff = diffExport([], [orphan]);
+  expect(diff.remove).toEqual([orphan]);
+});
+
+// Вхождения повторов приходят с синтетическими идентификаторами, и связка
+// заводится на них же. Иначе одно занятие попадало бы разом и в «создать»,
+// и в «удалить» на каждом проходе.
+test('вхождение повтора связывается по своему синтетическому ключу', () => {
+  const occurrence = task({ id: 'occ:rule-1:2026-09-10', recurrenceId: 'rule-1' });
+  const diff = diffExport(
+    [occurrence],
+    [link({ taskKey: 'occ:rule-1:2026-09-10', fingerprint: fingerprintOf(occurrence) })],
+  );
+  expect(diff).toEqual({ create: [], update: [], remove: [] });
 });

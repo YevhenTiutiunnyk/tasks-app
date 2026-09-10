@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { addDays } from './dates';
 import type { Task } from './types';
+import type { ExportLink } from './db';
 
 /**
  * Окно выгрузки: неделя назад, месяц вперёд.
@@ -55,4 +56,45 @@ export function fingerprintOf(task: Task): string {
     String(task.durationMinutes),
   ];
   return createHash('sha256').update(parts.join(' ')).digest('hex');
+}
+
+export interface ExportDiff {
+  create: Task[];
+  update: { task: Task; eventId: string }[];
+  remove: ExportLink[];
+}
+
+/**
+ * Что надо сделать в Google, чтобы календарь совпал с задачами.
+ *
+ * Чистая функция и сердце всей ступени: сверщик не знает, что именно
+ * поменялось, он каждый раз спрашивает «что должно быть» и «что выгружено»
+ * и берёт разницу. Поэтому его нельзя забыть научить — в отличие от
+ * восьми мест, где задача меняется.
+ *
+ * Ключ связки — это `task.id`, а у вхождения повтора он синтетический
+ * (`occ:<правило>:<дата>`). Отдельного пространства ключей не заводим:
+ * тем же ключом пользуются напоминания и снимок недельного отчёта.
+ */
+export function diffExport(tasks: Task[], links: ExportLink[]): ExportDiff {
+  const byKey = new Map(links.map((link) => [link.taskKey, link]));
+  const diff: ExportDiff = { create: [], update: [], remove: [] };
+
+  for (const task of tasks) {
+    const link = byKey.get(task.id);
+    if (!link) {
+      diff.create.push(task);
+      continue;
+    }
+    byKey.delete(task.id);
+    if (link.fingerprint !== fingerprintOf(task)) {
+      diff.update.push({ task, eventId: link.eventId });
+    }
+  }
+
+  // Осталось в карте — то, чему в календаре больше не место: задачу
+  // удалили, либо она уехала за пределы окна.
+  diff.remove.push(...byKey.values());
+
+  return diff;
 }
