@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
-import { disconnectCalendars, getCalendars, setSelectedCalendars, upsertCalendars } from '@/lib/db';
+import {
+  disconnectCalendars, getCalendars, markCalendarsBroken, markCalendarsHealthy,
+  setSelectedCalendars, upsertCalendars,
+} from '@/lib/db';
 import { getCalendarClient } from '@/lib/google-token';
 import { readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
@@ -8,6 +11,13 @@ import { requireUser } from '@/lib/require-user';
  * Список календарей человека. Обновляем названия у Google при каждом
  * открытии настроек: календарь могли переименовать, а галочки при этом
  * обязаны уцелеть — за это отвечает upsertCalendars.
+ *
+ * Заодно это единственное место, где сломанная связь оживает. Планировщик
+ * сломанные календари больше не трогает (см. syncUser), а «Подключить
+ * заново» в настройках зовёт согласие Google и возвращает сюда же — то есть
+ * ровно к этому GET. Поэтому удачный поход в Google здесь — честный
+ * человеческий сигнал «связь снова жива», а неудачный — что она мертва
+ * прямо сейчас, а не когда-то в прошлом (находка C1 финального ревью).
  */
 export async function GET(request: Request) {
   const user = await requireUser(request);
@@ -16,9 +26,11 @@ export async function GET(request: Request) {
   try {
     const client = await getCalendarClient(user.userId);
     await upsertCalendars(user.userId, await client.listCalendars());
+    await markCalendarsHealthy(user.userId);
   } catch {
     // Разрешения нет или оно отозвано — это не ошибка экрана. Покажем
     // то, что уже сохранено, и признак «надо подключить заново» (brokenAt).
+    await markCalendarsBroken(user.userId);
   }
 
   const calendars = await getCalendars(user.userId);

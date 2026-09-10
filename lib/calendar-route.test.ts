@@ -95,6 +95,36 @@ run('/api/calendar', () => {
     ]);
   });
 
+  it('C1: сломанный календарь оживает после удачного GET', async () => {
+    // Календарь сначала должен появиться (успешный поход в Google), потом
+    // сломаться (неудачный) — и только тогда проверяем оживление.
+    googleToken.fail = false;
+    googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
+    await GET(new Request('http://localhost/api/calendar'));
+
+    googleToken.fail = true;
+    let body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(true);
+
+    // Возврат с экрана согласия Google делает ровно этот запрос — удачный
+    // GET и есть единственный человеческий сигнал «связь снова жива».
+    googleToken.fail = false;
+    body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(false);
+  });
+
+  it('C1: живой календарь помечается сломанным после неудачного GET', async () => {
+    googleToken.fail = false;
+    googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
+    await GET(new Request('http://localhost/api/calendar'));
+    let body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(false);
+
+    googleToken.fail = true;
+    body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.broken).toBe(true);
+  });
+
   it('DELETE убирает строки владельца zz-cal-owner', async () => {
     googleToken.fail = false;
     googleToken.calendars = [{ calendarId: 'primary', summary: 'ZZ-основной' }];
