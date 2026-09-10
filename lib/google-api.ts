@@ -90,6 +90,18 @@ function eventBody(draft: EventDraft) {
   };
 }
 
+/**
+ * Идентификатор из ответа — то единственное, ради чего делался запрос
+ * на создание. Без проверки undefined уехал бы в таблицу связок под видом
+ * идентификатора, и каждая последующая правка ходила бы по адресу
+ * .../events/undefined и получала бы 404 вечно. Ответ в сообщение
+ * не кладём: там бывают названия встреч.
+ */
+function requireId(data: GoogleResponse): string {
+  if (!data.id) throw new Error('Google не вернул идентификатор');
+  return data.id;
+}
+
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>;
 
 interface GoogleResponse {
@@ -160,7 +172,7 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
     },
     async createCalendar(summary) {
       const data = await call(`${BASE}/calendars`, { method: 'POST', body: { summary } });
-      return data.id!;
+      return requireId(data);
     },
     async deleteCalendar(calendarId) {
       await call(`${BASE}/calendars/${encodeURIComponent(calendarId)}`, { method: 'DELETE' });
@@ -169,7 +181,7 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
       const data = await call(`${BASE}/calendars/${encodeURIComponent(calendarId)}/events`, {
         method: 'POST', body: eventBody(draft),
       });
-      return data.id!;
+      return requireId(data);
     },
     async patchEvent(calendarId, eventId, draft) {
       await call(eventUrl(calendarId, eventId), { method: 'PATCH', body: eventBody(draft) });

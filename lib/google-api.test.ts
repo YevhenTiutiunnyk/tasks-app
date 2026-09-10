@@ -58,23 +58,82 @@ interface EventPayload {
   extendedProperties: { private: { taskKey: string } };
 }
 
-test('создание события шлёт стенные часы и пояс, без смещения', async () => {
-  let body: EventPayload | null = null;
-  const client = googleClient('zz-token', async (_url, init) => {
-    body = JSON.parse(init.body as string) as EventPayload;
-    return new Response(JSON.stringify({ id: 'e1' }), { status: 200 });
-  });
+/** Что ушло в Google: адрес, метод, заголовки и тело одного запроса. */
+interface SentRequest {
+  url: string;
+  method?: string;
+  contentType: string | null;
+  body?: string;
+}
+
+function recorder(response: () => Response) {
+  const sent: SentRequest = { url: '', contentType: null };
+  const fetcher = async (url: string, init: RequestInit) => {
+    sent.url = url;
+    sent.method = init.method;
+    sent.contentType = new Headers(init.headers).get('Content-Type');
+    sent.body = init.body as string | undefined;
+    return response();
+  };
+  return { sent, fetcher };
+}
+
+// Адрес и метод проверяются наравне с телом. Запись в чужой календарь —
+// ровно то, от чего бережёт разрешение calendar.app.created, а вызывающего
+// у этих методов пока нет: кроме теста, за адрес не отвечает никто.
+// Молча потерянный calendarId отправил бы задачи человека в его основной
+// календарь, и тело при этом было бы правильным до последнего поля.
+test('создание события шлёт POST по адресу событий календаря, стенными часами', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  const client = googleClient('zz-token', fetcher);
   const eventId = await client.insertEvent('cal-1', draft);
   expect(eventId).toBe('e1');
-  expect(body!.start).toEqual({ dateTime: '2026-09-10T10:00:00', timeZone: 'Europe/Amsterdam' });
-  expect(body!.end).toEqual({ dateTime: '2026-09-10T11:00:00', timeZone: 'Europe/Amsterdam' });
-  expect(body!.extendedProperties.private.taskKey).toBe('t1');
+  expect(sent.method).toBe('POST');
+  expect(new URL(sent.url).pathname).toBe('/calendar/v3/calendars/cal-1/events');
+  expect(sent.contentType).toBe('application/json');
+  const body = JSON.parse(sent.body!) as EventPayload;
+  expect(body.start).toEqual({ dateTime: '2026-09-10T10:00:00', timeZone: 'Europe/Amsterdam' });
+  expect(body.end).toEqual({ dateTime: '2026-09-10T11:00:00', timeZone: 'Europe/Amsterdam' });
+  expect(body.extendedProperties.private.taskKey).toBe('t1');
 });
 
-test('создание календаря возвращает его идентификатор', async () => {
-  const client = googleClient('zz-token', async () =>
-    new Response(JSON.stringify({ id: 'cal-new' }), { status: 200 }));
-  expect(await client.createCalendar('Расписание')).toBe('cal-new');
+test('идентификатор календаря в адресе события экранируется', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  await googleClient('zz-token', fetcher).insertEvent('zz+cal@group.calendar.google.com', draft);
+  expect(new URL(sent.url).pathname).toBe(
+    '/calendar/v3/calendars/zz%2Bcal%40group.calendar.google.com/events',
+  );
+});
+
+// Часы и минуты обязаны быть двузначными всегда: Google отказывает
+// на кривом dateTime, и без этой проверки любая задача раньше десяти утра
+// уезжала бы как «9:05:00» и не создавалась вовсе.
+test('однозначный час и ненулевая минута уезжают двузначными', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  await googleClient('zz-token', fetcher).insertEvent('cal-1', {
+    ...draft, startMinute: 5, endMinute: 545,
+  });
+  const body = JSON.parse(sent.body!) as EventPayload;
+  expect(body.start).toEqual({ dateTime: '2026-09-10T00:05:00', timeZone: 'Europe/Amsterdam' });
+  expect(body.end).toEqual({ dateTime: '2026-09-10T09:05:00', timeZone: 'Europe/Amsterdam' });
+});
+
+test('создание календаря шлёт POST со списком календарей и возвращает идентификатор', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'cal-new' }), { status: 200 }));
+  expect(await googleClient('zz-token', fetcher).createCalendar('Расписание')).toBe('cal-new');
+  expect(sent.method).toBe('POST');
+  expect(new URL(sent.url).pathname).toBe('/calendar/v3/calendars');
+  expect(sent.contentType).toBe('application/json');
+  expect(JSON.parse(sent.body!)).toEqual({ summary: 'Расписание' });
+});
+
+// Ответ без идентификатора — не успех: undefined уехал бы в таблицу связок
+// под видом идентификатора события, и каждая следующая правка ходила бы
+// по адресу .../events/undefined и получала 404 навсегда.
+test('ответ без идентификатора — отказ, а не молчаливый undefined', async () => {
+  const client = googleClient('zz-token', async () => new Response('{}', { status: 200 }));
+  await expect(client.insertEvent('cal-1', draft)).rejects.toThrow(/идентификатор/);
+  await expect(client.createCalendar('Расписание')).rejects.toThrow(/идентификатор/);
 });
 
 test('404 превращается в CalendarGone, а не в общий отказ', async () => {
@@ -101,29 +160,26 @@ test('удачное удаление календаря с пустым тел�
 });
 
 test('удаление события шлёт DELETE по адресу события, с экранированием', async () => {
-  let seen: { url: string; method?: string } = { url: '' };
-  const client = googleClient('zz-token', async (url, init) => {
-    seen = { url, method: init.method };
-    return new Response(null, { status: 204 });
-  });
-  await client.deleteEvent('zz+cal@group.calendar.google.com', 'e 1');
-  expect(seen.method).toBe('DELETE');
-  expect(new URL(seen.url).pathname).toBe(
+  const { sent, fetcher } = recorder(() => new Response(null, { status: 204 }));
+  await googleClient('zz-token', fetcher).deleteEvent('zz+cal@group.calendar.google.com', 'e 1');
+  expect(sent.method).toBe('DELETE');
+  expect(new URL(sent.url).pathname).toBe(
     '/calendar/v3/calendars/zz%2Bcal%40group.calendar.google.com/events/e%201',
   );
+  // Тела у запроса нет — значит и заголовка о его виде быть не должно:
+  // ровно это и стережёт признак hasBody в call.
+  expect(sent.contentType).toBeNull();
+  expect(sent.body).toBeUndefined();
 });
 
 test('удаление календаря шлёт DELETE по адресу календаря', async () => {
-  let seen: { url: string; method?: string } = { url: '' };
-  const client = googleClient('zz-token', async (url, init) => {
-    seen = { url, method: init.method };
-    return new Response(null, { status: 204 });
-  });
-  await client.deleteCalendar('zz+cal@group.calendar.google.com');
-  expect(seen.method).toBe('DELETE');
-  expect(new URL(seen.url).pathname).toBe(
+  const { sent, fetcher } = recorder(() => new Response(null, { status: 204 }));
+  await googleClient('zz-token', fetcher).deleteCalendar('zz+cal@group.calendar.google.com');
+  expect(sent.method).toBe('DELETE');
+  expect(new URL(sent.url).pathname).toBe(
     '/calendar/v3/calendars/zz%2Bcal%40group.calendar.google.com',
   );
+  expect(sent.contentType).toBeNull();
 });
 
 // Правка идёт тем же телом, что и создание: разойдись они, событие после
