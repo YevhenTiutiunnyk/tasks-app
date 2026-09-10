@@ -185,15 +185,18 @@ test('удаление календаря шлёт DELETE по адресу ка
 // Правка идёт тем же телом, что и создание: разойдись они, событие после
 // переноса показывало бы старое время в одном из двух путей.
 test('правка события шлёт PATCH тем же телом, что и создание', async () => {
-  let seen: { url: string; method?: string; body?: string } = { url: '' };
-  const client = googleClient('zz-token', async (url, init) => {
-    seen = { url, method: init.method, body: init.body as string };
-    return new Response(JSON.stringify({ id: 'e1' }), { status: 200 });
-  });
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  const client = googleClient('zz-token', fetcher);
   await expect(client.patchEvent('cal-1', 'e1', draft)).resolves.toBeUndefined();
-  expect(seen.method).toBe('PATCH');
-  expect(new URL(seen.url).pathname).toBe('/calendar/v3/calendars/cal-1/events/e1');
-  expect(JSON.parse(seen.body!)).toEqual({
+  expect(sent.method).toBe('PATCH');
+  expect(new URL(sent.url).pathname).toBe('/calendar/v3/calendars/cal-1/events/e1');
+  // Заголовок проверяется и здесь, а не только на создании: тело есть у обоих
+  // путей записи, и признак hasBody в call не знает разницы между POST
+  // и PATCH. Без этой проверки правку можно было бы нечаянно оставить
+  // без Content-Type — Google не разобрал бы тело, и в Google не уезжало бы
+  // ни одно изменение уже существующей задачи.
+  expect(sent.contentType).toBe('application/json');
+  expect(JSON.parse(sent.body!)).toEqual({
     summary: 'ZZ-тренировка',
     start: { dateTime: '2026-09-10T10:00:00', timeZone: 'Europe/Amsterdam' },
     end: { dateTime: '2026-09-10T11:00:00', timeZone: 'Europe/Amsterdam' },
