@@ -789,3 +789,94 @@ export async function disconnectCalendars(userId: string): Promise<void> {
   await sql`delete from google_events where user_id = ${userId}`;
   await sql`delete from google_calendars where user_id = ${userId}`;
 }
+
+export interface ExportRow {
+  calendarId: string | null;
+  enabled: boolean;
+  syncedAt: string | null;
+  reconciledAt: string | null;
+  brokenAt: string | null;
+}
+
+export interface ExportLink {
+  taskKey: string;
+  eventId: string;
+  fingerprint: string;
+}
+
+export async function getExport(userId: string): Promise<ExportRow | null> {
+  const [row] = await sql`
+    select calendar_id, enabled, synced_at, reconciled_at, broken_at
+    from google_export where user_id = ${userId}`;
+  if (!row) return null;
+  return {
+    calendarId: row.calendar_id,
+    enabled: row.enabled,
+    syncedAt: row.synced_at === null ? null : row.synced_at.toISOString(),
+    reconciledAt: row.reconciled_at === null ? null : row.reconciled_at.toISOString(),
+    brokenAt: row.broken_at === null ? null : row.broken_at.toISOString(),
+  };
+}
+
+/**
+ * Включение выгрузки. Календарь всегда новый: повторное включение приходит
+ * либо после выключения (строки нет), либо после того, как человек удалил
+ * «Расписание» руками, — и в обоих случаях старые связки указывают
+ * на события, которых нет.
+ */
+export async function enableExport(userId: string, calendarId: string): Promise<void> {
+  await sql`
+    insert into google_export (user_id, calendar_id, enabled)
+    values (${userId}, ${calendarId}, true)
+    on conflict (user_id) do update set
+      calendar_id = excluded.calendar_id,
+      enabled = true,
+      broken_at = null,
+      synced_at = null,
+      reconciled_at = null`;
+  await sql`delete from google_task_events where user_id = ${userId}`;
+}
+
+export async function disableExport(userId: string): Promise<void> {
+  await sql`delete from google_export where user_id = ${userId}`;
+}
+
+export async function saveExportState(
+  userId: string,
+  state: { syncedAt?: boolean; reconciledAt?: boolean; brokenAt?: string | null },
+): Promise<void> {
+  await sql`
+    update google_export set
+      synced_at     = ${state.syncedAt ? sql`now()` : sql`synced_at`},
+      reconciled_at = ${state.reconciledAt ? sql`now()` : sql`reconciled_at`},
+      broken_at     = ${state.brokenAt === undefined ? sql`broken_at` : state.brokenAt}
+    where user_id = ${userId}`;
+}
+
+export async function getLinks(userId: string): Promise<ExportLink[]> {
+  const rows = await sql`
+    select task_key, event_id, fingerprint
+    from google_task_events where user_id = ${userId}
+    order by task_key`;
+  return rows.map((row) => ({
+    taskKey: row.task_key,
+    eventId: row.event_id,
+    fingerprint: row.fingerprint,
+  }));
+}
+
+export async function saveLink(userId: string, link: ExportLink): Promise<void> {
+  await sql`
+    insert into google_task_events (user_id, task_key, event_id, fingerprint)
+    values (${userId}, ${link.taskKey}, ${link.eventId}, ${link.fingerprint})
+    on conflict (user_id, task_key) do update set
+      event_id = excluded.event_id,
+      fingerprint = excluded.fingerprint,
+      updated_at = now()`;
+}
+
+export async function deleteLink(userId: string, taskKey: string): Promise<void> {
+  await sql`
+    delete from google_task_events
+    where user_id = ${userId} and task_key = ${taskKey}`;
+}

@@ -3,12 +3,16 @@ import { sql } from './db';
 import {
   addSubscription,
   clearUserKey,
+  disableExport,
   disconnectCalendars,
+  enableExport,
   getCalendars,
   getChecklistTasks,
   getEventsBetween,
   getExceptions,
+  getExport,
   getLatestReport,
+  getLinks,
   getNotifiableUsers,
   getRecurrences,
   getSettings,
@@ -18,6 +22,7 @@ import {
   getUserKey,
   getWeekSnapshot,
   removeSubscription,
+  saveLink,
   saveReport,
   saveSettings,
   saveTimezone,
@@ -1989,6 +1994,36 @@ run('изоляция по владельцу', () => {
       expect((await getCalendars(idB)).map((c) => c.calendarId)).toEqual(['zz-cal-b']);
       const forB = await getEventsBetween(idB, '2030-03-04T00:00:00.000Z', '2030-03-05T00:00:00.000Z');
       expect(forB.map((e) => e.eventId)).toEqual(['zz-ev-b2']);
+    });
+  });
+
+  describe('изоляция выгрузки в Google Calendar', () => {
+    afterEach(async () => {
+      await sql`delete from google_export where user_id in (${idA}, ${idB})`;
+    });
+
+    it('getExport и getLinks одного не отдают данные другого', async () => {
+      await enableExport(idA, 'zz-export-cal-a');
+      await enableExport(idB, 'zz-export-cal-b');
+      await saveLink(idA, { taskKey: 'zz-t-a', eventId: 'zz-ev-a', fingerprint: 'aaa' });
+      await saveLink(idB, { taskKey: 'zz-t-b', eventId: 'zz-ev-b', fingerprint: 'bbb' });
+
+      expect((await getExport(idA))!.calendarId).toBe('zz-export-cal-a');
+      expect((await getExport(idB))!.calendarId).toBe('zz-export-cal-b');
+      expect((await getLinks(idA)).map((link) => link.taskKey)).toEqual(['zz-t-a']);
+      expect((await getLinks(idB)).map((link) => link.taskKey)).toEqual(['zz-t-b']);
+    });
+
+    it('disableExport одного не трогает данные другого', async () => {
+      await enableExport(idA, 'zz-export-cal-a');
+      await enableExport(idB, 'zz-export-cal-b');
+      await saveLink(idB, { taskKey: 'zz-t-b2', eventId: 'zz-ev-b2', fingerprint: 'bbb' });
+
+      await disableExport(idA);
+
+      expect(await getExport(idA)).toBeNull();
+      expect((await getExport(idB))!.calendarId).toBe('zz-export-cal-b');
+      expect((await getLinks(idB)).map((link) => link.taskKey)).toEqual(['zz-t-b2']);
     });
   });
 });
