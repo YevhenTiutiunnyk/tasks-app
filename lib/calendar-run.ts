@@ -65,6 +65,34 @@ export function needsFullSync(calendar: CalendarRow, today: string): boolean {
   return calendar.windowEnd < addDays(today, 60);
 }
 
+/**
+ * Пересечение окон копии среди ВЫБРАННЫХ календарей — то, что гарантированно
+ * загружено у всех разом. Невыбранный календарь не в счёт: его встречи и так
+ * не показываются. Календарь, ещё не прошедший первую синхронизацию
+ * (windowStart/windowEnd оба null), тоже не в счёт: про его окно пока нечего
+ * сказать определённого, а не «окна нет вовсе».
+ *
+ * null — нет ни одного выбранного календаря с известным окном: либо
+ * подключения нет вовсе, либо первая загрузка ещё не кончилась. В обоих
+ * случаях предупреждать не о чем (см. isWeekOutsideCalendarWindow в
+ * lib/dates.ts — находка I5 финального ревью: спека прямо требует, чтобы
+ * край окна копии был виден на экране, а не выглядел как отсутствие встреч).
+ *
+ * Пересечение, а не объединение: если хотя бы один выбранный календарь ещё
+ * не докачал неделю, наша копия для неё неполна, даже когда другой
+ * выбранный календарь её уже покрывает — и лучше лишний раз показать
+ * пометку, чем скрыть недостающую встречу.
+ */
+export function copyWindow(calendars: CalendarRow[]): { start: string; end: string } | null {
+  const known = calendars.filter(
+    (calendar) => calendar.selected && calendar.windowStart !== null && calendar.windowEnd !== null,
+  );
+  if (known.length === 0) return null;
+  const start = known.reduce((max, c) => (c.windowStart! > max ? c.windowStart! : max), known[0].windowStart!);
+  const end = known.reduce((min, c) => (c.windowEnd! < min ? c.windowEnd! : min), known[0].windowEnd!);
+  return { start, end };
+}
+
 export async function syncCalendar(
   deps: CalendarDeps, userId: string, calendar: CalendarRow, today: string,
 ): Promise<void> {

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { addDays, eachDay, isValidIsoDate, startOfMonth, startOfWeek, weekRange, weekdayOf } from './dates';
+import {
+  addDays, eachDay, isValidIsoDate, isWeekOutsideCalendarWindow, startOfMonth, startOfWeek,
+  weekRange, weekdayOf,
+} from './dates';
 
 describe('addDays', () => {
   it('сдвигает внутри месяца', () => expect(addDays('2026-08-04', 3)).toBe('2026-08-07'));
@@ -44,6 +47,32 @@ describe('isValidIsoDate', () => {
     expect(isValidIsoDate('04.08.2026')).toBe(false);
     expect(isValidIsoDate('2026-8-4')).toBe(false);
     expect(isValidIsoDate('')).toBe(false);
+  });
+});
+
+describe('isWeekOutsideCalendarWindow', () => {
+  const window = { start: '2026-08-08', end: '2026-12-08' };
+
+  it('нет окна — календарь не подключён вовсе, предупреждать не о чем', () => {
+    expect(isWeekOutsideCalendarWindow('2030-01-06', '2030-01-12', null)).toBe(false);
+  });
+
+  it('неделя целиком внутри окна', () => {
+    expect(isWeekOutsideCalendarWindow('2026-09-07', '2026-09-13', window)).toBe(false);
+  });
+
+  it('неделя целиком за концом окна — дальше копии нет', () => {
+    expect(isWeekOutsideCalendarWindow('2027-01-04', '2027-01-10', window)).toBe(true);
+  });
+
+  it('неделя целиком раньше начала окна', () => {
+    expect(isWeekOutsideCalendarWindow('2026-07-06', '2026-07-12', window)).toBe(true);
+  });
+
+  it('неделя лишь частично выходит за окно — считается внутри', () => {
+    // Последний день недели совпадает с последним днём окна: копия за эту
+    // неделю ещё есть, показывать пометку рано.
+    expect(isWeekOutsideCalendarWindow('2026-12-07', '2026-12-13', window)).toBe(false);
   });
 });
 

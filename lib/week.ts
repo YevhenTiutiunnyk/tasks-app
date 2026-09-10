@@ -1,9 +1,10 @@
 import 'server-only';
 import {
-  getExceptions, getEventsBetween, getRecurrences, getSettings, getTasksBetween, getTimezone,
-  hasUserKey,
+  getCalendars, getExceptions, getEventsBetween, getRecurrences, getSettings, getTasksBetween,
+  getTimezone, hasUserKey,
 } from './db';
 import { splitIntoDays } from './calendar';
+import { copyWindow } from './calendar-run';
 import { expandRecurrences } from './recurrence';
 import { addDays, weekRange } from './dates';
 import type { EventDay, Settings, Task } from './types';
@@ -14,6 +15,15 @@ export interface WeekData {
   tasks: Task[];
   /** Встречи Google, уже разложенные по локальным дням недели. Только читаются. */
   events: EventDay[];
+  /**
+   * Границы окна копии календаря (пересечение среди выбранных календарей),
+   * либо null — календарь не подключён вовсе, либо ещё не прошёл первую
+   * синхронизацию. Клиент показывает по ним приглушённую строку, когда
+   * видимая неделя выходит за окно: за его пределами встреч в копии
+   * точно нет, и это должно быть видно на экране, а не выглядеть как
+   * «встреч не нашлось» (находка I5 финального ревью).
+   */
+  calendarWindow: { start: string; end: string } | null;
   settings: Settings;
   /**
    * Признак «строка ключа есть и шифротекст заполнен», а НЕ «ключ пригоден».
@@ -47,12 +57,16 @@ export async function loadWeek(userId: string, anchor: string): Promise<WeekData
   // сутки с запасом с каждой стороны и режем раскладкой: встреча, начавшаяся
   // в 23:30 по местному времени последнего дня недели, в UTC приходится уже
   // на следующие сутки и без запаса не попала бы в выборку вовсе.
-  const [tasks, settings, hasKey, timezone, events] = await Promise.all([
+  const [tasks, settings, hasKey, timezone, events, calendars] = await Promise.all([
     loadRange(userId, from, to),
     getSettings(userId),
     hasUserKey(userId),
     getTimezone(userId),
     getEventsBetween(userId, `${addDays(from, -1)}T00:00:00.000Z`, `${addDays(to, 2)}T00:00:00.000Z`),
+    getCalendars(userId),
   ]);
-  return { from, to, tasks, events: splitIntoDays(events, timezone, from, to), settings, hasKey };
+  return {
+    from, to, tasks, events: splitIntoDays(events, timezone, from, to),
+    calendarWindow: copyWindow(calendars), settings, hasKey,
+  };
 }

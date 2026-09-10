@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import { CalendarAccessLost, SyncTokenExpired, type CalendarClient, type ListEventsParams } from './google-api';
 import {
-  needsFullSync, syncCalendar, syncManyUsers, syncUser, syncWindow, type CalendarDeps,
+  copyWindow, needsFullSync, syncCalendar, syncManyUsers, syncUser, syncWindow, type CalendarDeps,
 } from './calendar-run';
 import type { CalendarRow } from './db';
 import type { CalendarEvent } from './types';
@@ -325,6 +325,23 @@ test('syncUser синхронизирует нужные календари и �
   expect(result).toEqual({ synced: 2, failed: 1 });
   // Сбой на 'bad' не должен был остановить обход раньше 'c'.
   expect(seen).toEqual(['a', 'bad', 'c']);
+});
+
+test('copyWindow: null, когда ни один выбранный календарь не знает своего окна', () => {
+  // Не подключено вовсе — пустой список.
+  expect(copyWindow([])).toBeNull();
+  // Подключено, но выбранный календарь ещё не прошёл первую синхронизацию.
+  expect(copyWindow([calendar({ windowStart: null, windowEnd: null })])).toBeNull();
+  // Календарь с известным окном есть, но он не выбран — не в счёт.
+  expect(copyWindow([calendar({ selected: false })])).toBeNull();
+});
+
+test('copyWindow: пересечение окон нескольких выбранных календарей', () => {
+  const a = calendar({ calendarId: 'a', windowStart: '2026-08-08', windowEnd: '2026-12-08' });
+  const b = calendar({ calendarId: 'b', windowStart: '2026-09-01', windowEnd: '2026-11-01' });
+  // Невыбранный календарь с более широким окном не должен расширить пересечение.
+  const c = calendar({ calendarId: 'c', selected: false, windowStart: '2026-01-01', windowEnd: '2027-01-01' });
+  expect(copyWindow([a, b, c])).toEqual({ start: '2026-09-01', end: '2026-11-01' });
 });
 
 test('syncManyUsers останавливается по бюджету времени, а не по счётчику владельцев', async () => {

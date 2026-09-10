@@ -10,7 +10,7 @@ import { DayFeed } from '@/components/DayFeed';
 import { TaskCard } from '@/components/TaskCard';
 import { UndoToast } from '@/components/UndoToast';
 import { WeekGrid } from '@/components/WeekGrid';
-import { addDays, todayIso } from '@/lib/dates';
+import { addDays, isWeekOutsideCalendarWindow, todayIso } from '@/lib/dates';
 import { formatWeekRange } from '@/lib/format';
 import type { EventDay, Settings, Task } from '@/lib/types';
 
@@ -20,6 +20,8 @@ interface WeekData {
   tasks: Task[];
   /** Встречи Google, уже разложенные по дням недели сервером. Только читаются. */
   events: EventDay[];
+  /** Границы окна копии календаря, либо null — календарь не подключён вовсе. */
+  calendarWindow: { start: string; end: string } | null;
   settings: Settings;
   hasKey: boolean;
 }
@@ -289,6 +291,18 @@ export default function Home() {
           <button onClick={() => setReloadToken((n) => n + 1)} className="font-semibold underline">
             Повторить
           </button>
+        </p>
+      )}
+
+      {isWeekOutsideCalendarWindow(week.from, week.to, week.calendarWindow) && (
+        // Спека прямо требует отличать «дальше копии нет» от «встреч не
+        // нашлось»: без этой строки перелиставший на четвёртый месяц вперёд
+        // человек не отличил бы одно от другого (находка I5 финального
+        // ревью). Календарь, который не подключали вовсе, calendarWindow
+        // не имеет — isWeekOutsideCalendarWindow сама возвращает false,
+        // и строки не будет, о чём и просит спека.
+        <p className="mb-2 text-xs text-muted">
+          Дальше копия календаря не заходит — встречи здесь могут быть не показаны.
         </p>
       )}
 

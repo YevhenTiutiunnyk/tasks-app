@@ -43,6 +43,26 @@ export function weekRange(iso: string): { from: string; to: string } {
   return { from, to: addDays(from, 6) };
 }
 
+/**
+ * Неделя целиком лежит вне окна копии календаря — то есть в ней точно
+ * нет ни одной хранимой встречи, а не «встреч не нашлось».
+ *
+ * Спека прямо требует отличать это от пустой недели на экране (см. раздел
+ * «Известные ограничения» дизайна): человек, перелиставший на четвёртый
+ * месяц вперёд, иначе не отличил бы «дальше копия не заходит» от «правда
+ * нет встреч» (находка I5 финального ревью). window === null — календарь
+ * не подключён вовсе либо ещё не прошёл первую синхронизацию: в обоих
+ * случаях предупреждать не о чем.
+ */
+export function isWeekOutsideCalendarWindow(
+  weekFrom: string,
+  weekTo: string,
+  window: { start: string; end: string } | null,
+): boolean {
+  if (!window) return false;
+  return weekTo < window.start || weekFrom > window.end;
+}
+
 export function eachDay(from: string, to: string): string[] {
   const days: string[] = [];
   for (let cursor = from; cursor <= to; cursor = addDays(cursor, 1)) days.push(cursor);
