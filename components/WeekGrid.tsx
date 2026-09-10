@@ -34,9 +34,11 @@ export function WeekGrid({ from, to, tasks, events, settings, today, onSelect, o
   // каждый клик перетаскиванием — карточка не открылась бы никогда.
   const pressStart = useRef<{ x: number; y: number } | null>(null);
 
-  // Рабочий день плюс два часа с каждой стороны, растянутый под реальные задачи недели.
+  // Рабочий день плюс два часа с каждой стороны, растянутый под реальные дела
+  // недели — и задачи, и встречи. Встречи здесь обязательны: без них встреча
+  // вне рабочих часов не поместилась бы в сетку и просто не нарисовалась.
   const nowMinute = useNowMinute();
-  const { firstHour, lastHour } = visibleHourRange(tasks, settings);
+  const { firstHour, lastHour } = visibleHourRange(tasks, settings, events);
   const hours = Array.from({ length: lastHour - firstHour }, (_, i) => firstHour + i);
   const gridHeight = hours.length * HOUR_HEIGHT;
 

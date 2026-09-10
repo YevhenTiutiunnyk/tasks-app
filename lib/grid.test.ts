@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { visibleHourRange } from './grid';
-import type { Settings, Task } from './types';
+import type { EventDay, Settings, Task } from './types';
 
 const settings: Settings = {
   workStartMinute: 540,   // 09:00
@@ -9,6 +9,20 @@ const settings: Settings = {
   categories: [],
   notifyBeforeMinutes: 15,
 };
+
+function event(patch: Partial<EventDay> = {}): EventDay {
+  return {
+    calendarId: 'primary',
+    eventId: 'e1',
+    title: 'ZZ-встреча',
+    date: '2026-09-10',
+    startMinute: 600,
+    durationMinutes: 60,
+    allDay: false,
+    mine: true,
+    ...patch,
+  };
+}
 
 function task(fields: Partial<Task>): Task {
   return {
@@ -65,6 +79,27 @@ describe('visibleHourRange', () => {
   test('задачи на весь день на диапазон не влияют', () => {
     const allDay = task({ allDay: true, startMinute: null, durationMinutes: null });
     expect(visibleHourRange([allDay], settings)).toEqual({ firstHour: 7, lastHour: 20 });
+  });
+
+  // Встречи из Google растягивают диапазон наравне с задачами. Без этого
+  // встреча раньше рабочих часов — планёрка в восемь утра, ночной перелёт —
+  // молча не рисуется вовсе: её отступ оказывается выше первого часа сетки.
+  // На телефоне она при этом видна в ленте, то есть экраны расходятся,
+  // и человеку неоткуда узнать, что от него что-то скрыли.
+  test('ранняя встреча растягивает диапазон вверх', () => {
+    // 06:00 — раньше нижней границы рабочего дня с запасом (07:00),
+    // иначе тест прошёл бы и без починки: встреча уже помещалась бы в сетку.
+    expect(visibleHourRange([], settings, [event({ startMinute: 360 })]).firstHour).toBe(6);
+  });
+
+  test('поздняя встреча растягивает диапазон вниз', () => {
+    const late = event({ startMinute: 1380, durationMinutes: 60 });
+    expect(visibleHourRange([], settings, [late]).lastHour).toBe(24);
+  });
+
+  test('встреча на весь день диапазон не трогает', () => {
+    const whole = event({ allDay: true, startMinute: null, durationMinutes: null });
+    expect(visibleHourRange([], settings, [whole])).toEqual({ firstHour: 7, lastHour: 20 });
   });
 
   test('диапазон не выходит за начало суток', () => {
