@@ -26,6 +26,16 @@ function setup(options: {
     inserted: [] as string[], patched: [] as string[], deleted: [] as string[],
     savedLinks: [] as ExportLink[], deletedLinks: [] as string[],
     saved: [] as Parameters<ExportDeps['saveExportState']>[1][],
+    // Отдельный журнал похода в Google (получения клиента) — нужен, чтобы
+    // «совпавший отпечаток не даёт ни одного обращения» проверялось прямо,
+    // а не косвенно через пустоту inserted/patched/deleted: без своего
+    // счётчика ранний (жадный) вызов clientFor остался бы незамеченным,
+    // раз сам он ничего не пишет в эти три массива.
+    touchedGoogle: [] as string[],
+    // Общий порядок вызовов клиента вперемешку — remove/update/create
+    // в тех же трёх массивах неразличимы по времени, а порядок «удаления,
+    // правки, создания» это как раз про время, а не про итоговые суммы.
+    calls: [] as string[],
   };
   const deps: ExportDeps = {
     getExport: async () => ({
@@ -38,16 +48,29 @@ function setup(options: {
     deleteLink: async (_u, key) => { state.deletedLinks.push(key); },
     loadRange: async () => options.tasks ?? [],
     getTimezone: async () => 'Europe/Amsterdam',
-    clientFor: async () => ({
-      listCalendars: async () => [],
-      listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: null }),
-      createCalendar: async () => 'cal-new',
-      deleteCalendar: async () => {},
-      insertEvent: async (_c, draft) => { state.inserted.push(draft.taskKey); return `e-${draft.taskKey}`; },
-      patchEvent: async (_c, eventId) => { state.patched.push(eventId); },
-      deleteEvent: async (_c, eventId) => { state.deleted.push(eventId); },
-      ...options.client,
-    }),
+    clientFor: async () => {
+      state.touchedGoogle.push('clientFor');
+      return {
+        listCalendars: async () => [],
+        listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: null }),
+        createCalendar: async () => 'cal-new',
+        deleteCalendar: async () => {},
+        insertEvent: async (_c, draft) => {
+          state.inserted.push(draft.taskKey);
+          state.calls.push(`create:${draft.taskKey}`);
+          return `e-${draft.taskKey}`;
+        },
+        patchEvent: async (_c, eventId) => {
+          state.patched.push(eventId);
+          state.calls.push(`update:${eventId}`);
+        },
+        deleteEvent: async (_c, eventId) => {
+          state.deleted.push(eventId);
+          state.calls.push(`remove:${eventId}`);
+        },
+        ...options.client,
+      };
+    },
   };
   return { deps, state };
 }
@@ -71,6 +94,10 @@ test('совпавший отпечаток не даёт ни одного об
   expect(state.inserted).toEqual([]);
   expect(state.patched).toEqual([]);
   expect(state.deleted).toEqual([]);
+  // Прямая проверка, а не только по пустоте трёх массивов выше: жадный
+  // clientFor (например, ради предзагрузки токена) ничего в них не пишет
+  // сам по себе и остался бы незамечен без этого счётчика.
+  expect(state.touchedGoogle).toEqual([]);
 });
 
 test('исчезнувшая задача удаляет и событие, и связку', async () => {
@@ -113,22 +140,83 @@ test('потеря доступа помечает связь сломанной
     client: { insertEvent: async () => { throw new CalendarAccessLost(); } },
   });
   await exportUser(deps, 'zz-user', TODAY, FOREVER);
-  expect(state.saved.at(-1)!.brokenAt).not.toBeNull();
+  // Весь журнал записей, а не только последняя: `.at(-1)!.brokenAt` зелен
+  // и тогда, когда brokenAt вовсе не передан (undefined `not.toBeNull()`
+  // проходит) — например, если фатальную ветку случайно поменять с `return`
+  // на `break` и финальный `{syncedAt:true}` затрёт собой пометку поломки,
+  // оставшись последней записью. Полное сравнение ловит и это: тогда
+  // в журнале окажется два вызова вместо одного, и toEqual покраснеет.
+  expect(state.saved).toEqual([{ syncedAt: true, brokenAt: expect.any(String) }]);
   expect(state.inserted).toEqual([]);
 });
 
-// Календарь удалён человеком. Пересоздавать молча нельзя: приложение,
-// упрямо возвращающее выкинутое, ведёт себя хамски.
-test('исчезнувший календарь помечает связь сломанной', async () => {
+// Календарь удалён человеком, а не просто одно событие в нём: 404 ловится
+// именно на СОЗДАНИИ, где событие в принципе не могло существовать раньше —
+// единственное объяснение 404 здесь это «пропал сам календарь». Пересоздавать
+// его молча нельзя: приложение, упрямо возвращающее выкинутое, ведёт себя
+// хамски. Правку и удаление та же ошибка не ломает — см. тесты ниже.
+test('исчезнувший при создании календарь помечает связь сломанной и прекращает проход', async () => {
   const { deps, state } = setup({
-    tasks: [task()],
+    tasks: [task(), task({ id: 't2' })],
     client: { insertEvent: async () => { throw new CalendarGone(); } },
   });
-  await exportUser(deps, 'zz-user', TODAY, FOREVER);
-  expect(state.saved.at(-1)!.brokenAt).not.toBeNull();
+  const result = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+  expect(state.saved).toEqual([{ syncedAt: true, brokenAt: expect.any(String) }]);
+  expect(state.inserted).toEqual([]);
+  expect(result.applied).toBe(0);
 });
 
-test('бюджет времени обрывает проход, не потеряв уже сделанного', async () => {
+// Пропавшее при ПРАВКЕ событие — это не пропавший календарь, а событие,
+// которое человек удалил руками в Google. Штатный случай, а не поломка:
+// связку снимаем и идём дальше по остальным операциям прохода, следующий
+// проход создаст событие заново через create.
+test('исчезнувшее при правке событие снимает связку и не прерывает проход', async () => {
+  const changed = task({ id: 'u1', title: 'Новое название' });
+  const created = task({ id: 'c1' });
+  const { deps, state } = setup({
+    tasks: [changed, created],
+    links: [{ taskKey: 'u1', eventId: 'e-old', fingerprint: 'устаревший-отпечаток' }],
+    client: { patchEvent: async () => { throw new CalendarGone(); } },
+  });
+  const result = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+  expect(state.deletedLinks).toEqual(['u1']);
+  // Дошли и до следующей операции — создания c1 — а не остановились.
+  expect(state.inserted).toEqual(['c1']);
+  // Связь не сломана: 410/404 на правку не значит потерю доступа.
+  expect(state.saved).toEqual([{ syncedAt: true }]);
+  // Сама правка в этот проход в Google не отражена (applied — только c1),
+  // но и отказом это не считается.
+  expect(result).toEqual({ applied: 1, failed: 0 });
+});
+
+// Пропавшее при УДАЛЕНИИ событие — операция уже добилась своей цели:
+// события и так не должно было быть. Связку снимаем, проход продолжается.
+test('исчезнувшее при удалении событие снимает связку и засчитывается применённым', async () => {
+  const created = task({ id: 'c1' });
+  const { deps, state } = setup({
+    tasks: [created],
+    links: [{ taskKey: 'gone', eventId: 'e-gone', fingerprint: 'что-то' }],
+    client: { deleteEvent: async () => { throw new CalendarGone(); } },
+  });
+  const result = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+  expect(state.deletedLinks).toEqual(['gone']);
+  expect(state.inserted).toEqual(['c1']);
+  expect(state.saved).toEqual([{ syncedAt: true }]);
+  // Удаление (цель достигнута) и создание — обе операции применены.
+  expect(result).toEqual({ applied: 2, failed: 0 });
+});
+
+test('операции идут строго в порядке «удаления, правки, создания»', async () => {
+  const created = task({ id: 'c1' });
+  const { deps, state } = setup({
+    tasks: [created],
+    links: [{ taskKey: 'gone', eventId: 'e-gone', fingerprint: 'что-то' }],
+  });
+  await exportUser(deps, 'zz-user', TODAY, FOREVER);
+  expect(state.calls).toEqual(['remove:e-gone', 'create:c1']);
+});
+
+test('бюджет уже истёк до первой операции — ничего не делаем, но проход отмечаем', async () => {
   const many = Array.from({ length: 5 }, (_, i) => task({ id: `t${i}` }));
   const { deps, state } = setup({ tasks: many });
   // Срок уже истёк: ни одной операции сделать не успеваем.
@@ -136,6 +224,28 @@ test('бюджет времени обрывает проход, не потер
   expect(state.inserted).toEqual([]);
   // Отметка о проходе всё равно ставится: иначе владелец, у которого бюджет
   // кончается каждый раз, вечно опрашивался бы на каждом тике.
+  expect(state.saved.at(-1)!.syncedAt).toBe(true);
+});
+
+// Проверка «бюджет истёк ДО первой операции» (тест выше) зелена и тогда,
+// когда проверка бюджета вынесена из цикла и стоит один раз на весь проход:
+// в обоих случаях ни одна операция не выполнится. Единственный способ
+// отличить «перед каждой» от «раз на проход» — истощить бюджет ПОСЕРЕДИНЕ
+// списка операций управляемым секундомером и убедиться, что первые
+// успевшие операции применились, а последующие — нет.
+test('бюджет обрывает проход после второй операции, не потеряв уже сделанного', async () => {
+  const many = Array.from({ length: 5 }, (_, i) => task({ id: `t${i}` }));
+  const { deps, state } = setup({ tasks: many });
+  let checks = 0;
+  // Первые две проверки бюджета (перед 1-й и 2-й операцией) укладываются,
+  // третья (перед 3-й операцией) уже нет — секундомер управляемый, гонки
+  // с настоящим временем нет.
+  const clock = () => { checks += 1; return checks >= 3 ? 1000 : 0; };
+  const result = await exportUser(deps, 'zz-user', TODAY, 500, clock);
+  expect(state.inserted).toEqual(['t0', 't1']);
+  expect(result.applied).toBe(2);
+  // Уже сделанное не потеряно: связки первых двух задач записаны.
+  expect(state.savedLinks.map((link) => link.taskKey)).toEqual(['t0', 't1']);
   expect(state.saved.at(-1)!.syncedAt).toBe(true);
 });
 

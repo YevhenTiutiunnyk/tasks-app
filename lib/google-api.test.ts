@@ -216,3 +216,17 @@ test('404 при чтении остаётся обычной Error и не вы
   expect(error).not.toBeInstanceOf(CalendarAccessLost);
   expect(error).not.toBeInstanceOf(SyncTokenExpired);
 });
+
+// Google отвечает 410, а не 404, когда удаляемое событие уже удалено —
+// например, повторная попытка после сбоя середины прохода сверщика. Смысл
+// этого 410 другой, чем у 410 при чтении (там это «токен протух, нужен
+// полный обход»), и общая лестница в call() эту разницу нарочно не видит —
+// перевод живёт на границе deleteEvent. Без него сверщик не понял бы, что
+// событие и так пропало, не снял бы связку и повторял бы обречённое
+// удаление каждые пять минут вечно.
+test('410 при удалении события — это тоже «события больше нет», а не протухший токен', async () => {
+  const client = googleClient('zz-token', async () => new Response('{}', { status: 410 }));
+  const error = await client.deleteEvent('cal-1', 'e1').catch((e) => e);
+  expect(error).toBeInstanceOf(CalendarGone);
+  expect(error).not.toBeInstanceOf(SyncTokenExpired);
+});

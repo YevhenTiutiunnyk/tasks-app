@@ -187,7 +187,22 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
       await call(eventUrl(calendarId, eventId), { method: 'PATCH', body: eventBody(draft) });
     },
     async deleteEvent(calendarId, eventId) {
-      await call(eventUrl(calendarId, eventId), { method: 'DELETE' });
+      // 410 здесь значит не то же самое, что у списка событий: там это
+      // «токен синхронизации протух, нужен полный обход», а на удаление
+      // одного события Google так отвечает, когда событие уже удалено —
+      // например, при повторном удалении после сбоя середины прохода
+      // сверщика. Общая лестница в call() не различает эндпоинты нарочно
+      // (иначе разошлась бы), поэтому смысл 410 переводится здесь, на
+      // границе конкретного метода, который знает, что тут значит именно
+      // это. Без перевода отказ уходил бы как «прочий», сверщик не снимал
+      // бы связку и повторял бы обречённое удаление каждые пять минут
+      // вечно.
+      try {
+        await call(eventUrl(calendarId, eventId), { method: 'DELETE' });
+      } catch (error) {
+        if (error instanceof SyncTokenExpired) throw new CalendarGone();
+        throw error;
+      }
     },
   };
 }
