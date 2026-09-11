@@ -678,6 +678,40 @@ test('exportManyUsers не запускает полную сверку у сл�
   expect(state.saved.some((s) => s.userId === 'broken' && s.patch.reconciledAt)).toBe(false);
 });
 
+// Однострочник финального ревью: не-access отказ сверки (сеть, квота, 500
+// у Google — сюда же попадают оба громких предохранителя reconcileLinks,
+// MAX_RECONCILE_PAGES и повторяющийся pageToken) тонул без счётчика. Оба
+// предохранителя бросают исключение именно такого рода, и без failed += 1
+// они были бы ненаблюдаемы в бою — единственный сигнал наружу у стадии
+// это счётчик failed (см. лог в app/api/notify/route.ts).
+test('exportManyUsers считает не-access отказ сверки в failed', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany(
+    { stale: { reconciledAt: '2026-09-08T00:00:00.000Z', syncedAt: null } },
+    { tasks: { stale: [] } },
+  );
+  deps.clientFor = async (userId) => {
+    state.touchedGoogle.push(userId);
+    return {
+      listCalendars: async () => [],
+      listEvents: async () => { throw new Error('ZZ-обрыв середины обхода'); },
+      createCalendar: async () => 'cal-new',
+      deleteCalendar: async () => {},
+      insertEvent: async () => 'e-x',
+      patchEvent: async () => {},
+      deleteEvent: async () => {},
+    };
+  };
+
+  const result = await exportManyUsers(deps, [{ userId: 'stale', today: TODAY }], now, FOREVER);
+
+  expect(result.failed).toBe(1);
+  // reconciledAt не проставлен — отказ не был успехом; и не broken_at:
+  // это не потеря доступа, а погода, обычный проход не должен глохнуть.
+  expect(state.saved.some((s) => s.userId === 'stale' && s.patch.reconciledAt)).toBe(false);
+  expect(state.saved.some((s) => s.userId === 'stale' && s.patch.brokenAt !== undefined)).toBe(false);
+});
+
 // tasks: [] в тестах выше не отличает «сверка идёт до exportUser» от «после
 // него или вовсе не идёт» — оба случая молчат одинаково. Здесь связка
 // указывает на событие, которого Google не вернёт (setupMany по умолчанию
