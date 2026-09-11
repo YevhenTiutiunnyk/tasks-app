@@ -837,6 +837,32 @@ export async function enableExport(userId: string, calendarId: string): Promise<
   await sql`delete from google_task_events where user_id = ${userId}`;
 }
 
+/**
+ * Кому положена выгрузка — независимо от того, включал ли человек пуши.
+ *
+ * Список владельцев для планировщика до этого был один на всё: он строился
+ * из push_subscriptions (getNotifiableUsers), потому что напоминаниям слать
+ * некому без подписки. Для выгрузки это правило чужое: человек нажимает
+ * «Включить», ему заводится календарь «Расписание» в Google, экран обещает
+ * держать в нём задачи — и календарь остаётся пустым навсегда, без единой
+ * ошибки, просто потому, что уведомления он не включал (находка I2
+ * финального ревью).
+ *
+ * Белый список — по той же причине, что и в getNotifiableUsers: планировщик
+ * вынесен из-под прокси, и проверка отзыва обязана стоять здесь. Иначе
+ * задачи отозванного человека продолжали бы уезжать в его Google.
+ */
+export async function getExportUsers(): Promise<string[]> {
+  const rows = await sql`
+    select e.user_id
+    from google_export e
+    join "user" u         on u.id = e.user_id
+    join allowed_emails a on a.email = lower(u.email)
+    where e.enabled = true
+  `;
+  return rows.map((row) => row.user_id as string);
+}
+
 export async function disableExport(userId: string): Promise<void> {
   await sql`delete from google_export where user_id = ${userId}`;
 }

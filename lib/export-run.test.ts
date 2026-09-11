@@ -52,6 +52,7 @@ function setup(options: {
     deleteLink: async (_u, key) => { state.deletedLinks.push(key); },
     loadRange: async () => options.tasks ?? [],
     getTimezone: async () => 'Europe/Amsterdam',
+    getExportUsers: async () => [],
     clientFor: async () => {
       state.touchedGoogle.push('clientFor');
       return {
@@ -302,6 +303,10 @@ function setupMany(
       return options.tasks?.[userId] ?? [];
     },
     getTimezone: async () => 'Europe/Amsterdam',
+    // По умолчанию список из базы пуст: тесты про бюджет, свежесть и сверку
+    // работают ровно с теми владельцами, которых им передали. Тесты про сам
+    // список ниже переопределяют это явно.
+    getExportUsers: async () => [],
     clientFor: async (userId) => {
       state.touchedGoogle.push(userId);
       return {
@@ -826,6 +831,7 @@ function liveDeps(
     },
     loadRange: async () => tasks,
     getTimezone: async () => 'Europe/Amsterdam',
+    getExportUsers: async () => [],
     clientFor: async () => googleClient('zz-token', fetcher),
   };
   return { deps, state };
@@ -885,4 +891,101 @@ test('наложившиеся проходы планировщика не пл
   expect(state.links).toEqual([
     { taskKey: 't1', eventId: eventIdFor('t1'), fingerprint: fingerprintOf(task()) },
   ]);
+});
+
+/* ---------- кого вообще выгружаем ---------- */
+
+// Находка I2 финального ревью. Список владельцев планировщик собирает
+// из подписок на пуши — он нужен напоминаниям. Для выгрузки это правило
+// чужое: человек нажал «Включить», ему завели «Расписание» в Google
+// и пообещали держать в нём задачи, а уведомления он не включал — и стадия
+// не доходила до него НИКОГДА, без единой ошибки где бы то ни было.
+test('владелец с включённой выгрузкой и без подписки на пуши всё равно выгружается', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany(
+    { 'без-пушей': { syncedAt: null } },
+    { tasks: { 'без-пушей': [task({ id: 'p1' })] } },
+  );
+  deps.getExportUsers = async () => ['без-пушей'];
+
+  // Список от планировщика ПУСТ: подписки на пуши у человека нет.
+  const result = await exportManyUsers(deps, [], now, FOREVER);
+
+  expect(state.inserted).toEqual([{ userId: 'без-пушей', taskKey: 'p1' }]);
+  expect(result.applied).toBe(1);
+});
+
+// Тот же владелец не должен попасть в список дважды: второй проход
+// по тому же человеку в том же тике — это лишний поход в Google и лишняя
+// трата общего бюджета.
+test('владелец, который есть и в подписках, и в выгрузке, обходится один раз', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany({ оба: { syncedAt: null } }, { tasks: { оба: [task({ id: 'b1' })] } });
+  deps.getExportUsers = async () => ['оба'];
+
+  await exportManyUsers(deps, [{ userId: 'оба', today: TODAY }], now, FOREVER);
+
+  // getExport читается дважды и на ОДНОМ верном проходе — сперва самим
+  // exportManyUsers, потом exportUser внутри него (задокументированное,
+  // принятое ревью тройное чтение той же строки). Дубль дедупликации
+  // выглядел бы иначе: владелец обошёлся бы ПОЛНЫМ вторым проходом, и вот
+  // это ловит insert — при сломанной дедупликации событие создалось бы
+  // дважды.
+  expect(state.visited).toEqual(['оба', 'оба']);
+  expect(state.inserted).toEqual([{ userId: 'оба', taskKey: 'b1' }]);
+});
+
+// `today` дописанного владельца обязан считаться его собственным поясом,
+// а не подставляться наугад: окно выгрузки отсчитывается от него, и ошибка
+// на сутки означала бы выгруженный не тот день.
+test('дописанному владельцу день считается его часовым поясом', async () => {
+  // 23:30 UTC — в Амстердаме уже следующие сутки.
+  const now = new Date('2026-09-10T23:30:00.000Z');
+  const { deps } = setupMany({ поздний: { syncedAt: null } }, { tasks: { поздний: [] } });
+  deps.getExportUsers = async () => ['поздний'];
+  const seen: string[] = [];
+  deps.loadRange = async (_u, from) => { seen.push(from); return []; };
+
+  await exportManyUsers(deps, [], now, FOREVER);
+
+  expect(seen).toEqual([exportWindow('2026-09-11').from]);
+});
+
+// Отказ на чтении списка не должен унести стадию целиком: те, кого
+// планировщик уже собрал, выгружаются как прежде, а факт неудачи виден
+// счётчиком — роут по нему пишет в лог стадию.
+test('отказ чтения списка выгрузки не отменяет уже собранных владельцев', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany({ известный: { syncedAt: null } },
+    { tasks: { известный: [task({ id: 'k1' })] } });
+  deps.getExportUsers = async () => { throw new Error('пул соединений исчерпан'); };
+
+  const result = await exportManyUsers(deps, [{ userId: 'известный', today: TODAY }], now, FOREVER);
+
+  expect(state.inserted).toEqual([{ userId: 'известный', taskKey: 'k1' }]);
+  expect(result.failed).toBe(1);
+});
+
+// Пояс одного дописанного владельца прочитать не вышло — пропускаем его
+// одного, а не всех: сосед по списку к его беде отношения не имеет.
+test('отказ чтения пояса пропускает одного владельца, а не всю стадию', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany(
+    { кривой: { syncedAt: null }, целый: { syncedAt: null } },
+    { tasks: { целый: [task({ id: 'c1' })] } },
+  );
+  deps.getExportUsers = async () => ['кривой', 'целый'];
+  deps.getTimezone = async (userId) => {
+    if (userId === 'кривой') throw new Error('пояс не читается');
+    return 'Europe/Amsterdam';
+  };
+
+  const result = await exportManyUsers(deps, [], now, FOREVER);
+
+  // Тот же принятый двойной getExport на один правильный проход, что и
+  // в тесте про пересечение списков выше, — «кривой» в него не попадает
+  // вовсе, его пояс не прочитался ДО первого чтения строки.
+  expect(state.visited).toEqual(['целый', 'целый']);
+  expect(state.inserted).toEqual([{ userId: 'целый', taskKey: 'c1' }]);
+  expect(result.failed).toBe(1);
 });

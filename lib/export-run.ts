@@ -8,10 +8,11 @@ import {
   CalendarAccessLost, CalendarGone, EventAlreadyExists, type CalendarClient,
 } from './google-api';
 import {
-  deleteLink, getExport, getLinks, getTimezone, saveExportState, saveLink,
+  deleteLink, getExport, getExportUsers, getLinks, getTimezone, saveExportState, saveLink,
   type ExportLink, type ExportRow,
 } from './db';
 import { getCalendarClient } from './google-token';
+import { nowInZone } from './notify';
 import { loadRange } from './week';
 import type { Task } from './types';
 
@@ -45,6 +46,7 @@ export interface ExportDeps {
   deleteLink(userId: string, taskKey: string): Promise<void>;
   loadRange(userId: string, from: string, to: string): Promise<Task[]>;
   getTimezone(userId: string): Promise<string>;
+  getExportUsers(): Promise<string[]>;
   clientFor(userId: string): Promise<CalendarClient>;
 }
 
@@ -368,6 +370,56 @@ export async function reconcileLinks(
 }
 
 /**
+ * Кого выгружать в этот тик.
+ *
+ * `known` — список, который планировщик уже собрал для напоминаний: он идёт
+ * от подписок на пуши. Для выгрузки такой список неверен, и это стоило
+ * человеку молчаливо пустого календаря: нажал «Включить», получил
+ * «Расписание» в Google и обещание держать в нём задачи — а уведомления
+ * не включал, и стадия выгрузки до него не доходила НИКОГДА, без единой
+ * ошибки где бы то ни было (находка I2 финального ревью).
+ *
+ * Поэтому список достраивается здесь, внутри самой стадии, а не в роуте:
+ * стоит развести «кого выгружаем» и «кого выгружает планировщик» по разным
+ * файлам, и они снова разойдутся молча. Напоминаний, отчёта и чтения
+ * календаря это не касается — у них свой список и свои правила.
+ *
+ * `today` для дописанных владельцев считается тем же способом, что и в цикле
+ * напоминаний: пояс из базы плюс nowInZone от того же момента `now`. Своих
+ * часов функция не заводит.
+ *
+ * Отказ на этом шаге не должен унести стадию целиком: не удалось спросить
+ * список — работаем по тому, что уже есть, и сообщаем счётчиком. Не удалось
+ * узнать пояс одного владельца — пропускаем его одного.
+ */
+async function exportOwners(
+  deps: ExportDeps,
+  known: { userId: string; today: string }[],
+  now: Date,
+): Promise<{ owners: { userId: string; today: string }[]; failed: number }> {
+  let failed = 0;
+  let extra: string[];
+  try {
+    extra = await deps.getExportUsers();
+  } catch {
+    return { owners: known, failed: 1 };
+  }
+
+  const owners = [...known];
+  const seen = new Set(known.map((user) => user.userId));
+  for (const userId of extra) {
+    if (seen.has(userId)) continue;
+    seen.add(userId);
+    try {
+      owners.push({ userId, today: nowInZone(await deps.getTimezone(userId), now).today });
+    } catch {
+      failed += 1;
+    }
+  }
+  return { owners, failed };
+}
+
+/**
  * Выгрузка для многих владельцев с общим бюджетом времени.
  *
  * Пятиминутный интервал живёт здесь, а не в exportUser: сверщик умеет
@@ -392,7 +444,10 @@ export async function exportManyUsers(
   let applied = 0;
   let failed = 0;
 
-  for (const { userId, today } of users) {
+  const { owners, failed: lost } = await exportOwners(deps, users, now);
+  failed += lost;
+
+  for (const { userId, today } of owners) {
     // Секундомер идёт только вперёд, поэтому выйти можно сразу: до
     // следующих владельцев бюджет не дотянется тем более.
     if (clock() >= deadline) break;
@@ -479,6 +534,6 @@ export async function exportManyUsers(
  */
 export const exportDeps: ExportDeps = {
   getExport, saveExportState, getLinks, saveLink, deleteLink,
-  loadRange, getTimezone,
+  loadRange, getTimezone, getExportUsers,
   clientFor: getCalendarClient,
 };
