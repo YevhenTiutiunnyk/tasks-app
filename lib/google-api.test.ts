@@ -186,6 +186,40 @@ test('403 при записи по-прежнему означает потер�
   await expect(client.insertEvent('cal-1', draft)).rejects.toBeInstanceOf(CalendarAccessLost);
 });
 
+// Находка I3 финального ревью: Google отдаёт 403 и на превышение лимита
+// запросов, и до этой правки оба исхода лечились как потеря доступа —
+// broken_at и остановка стадии, хотя разрешение цело и дело только в темпе.
+for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded']) {
+  test(`403 с причиной ${reason} — не потеря доступа, а погода`, async () => {
+    const secretBody = JSON.stringify({
+      error: { errors: [{ domain: 'usageLimits', reason, message: 'ZZ-секретное название встречи' }] },
+    });
+    const client = googleClient('zz-token', async () => new Response(secretBody, { status: 403 }));
+    const error = await client.insertEvent('cal-1', draft).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(CalendarAccessLost);
+    // Тело читалось ради причины, но в сообщение не попадает — там могут
+    // быть названия встреч.
+    expect(error.message).not.toContain('секретное');
+    expect(error.message).not.toContain('ZZ');
+  });
+}
+
+// Неопознанное тело 403 (не JSON, нет нужного поля, незнакомая причина) —
+// безопасная сторона ошибки: остаётся потерей доступа, как было всегда.
+test('403 с нераспознанной причиной остаётся потерей доступа', async () => {
+  const client = googleClient(
+    'zz-token',
+    async () => new Response(JSON.stringify({ error: { errors: [{ reason: 'ZZ-незнакомая' }] } }), { status: 403 }),
+  );
+  await expect(client.insertEvent('cal-1', draft)).rejects.toBeInstanceOf(CalendarAccessLost);
+});
+
+test('403 с телом не в формате JSON остаётся потерей доступа', async () => {
+  const client = googleClient('zz-token', async () => new Response('не json вовсе', { status: 403 }));
+  await expect(client.insertEvent('cal-1', draft)).rejects.toBeInstanceOf(CalendarAccessLost);
+});
+
 // Ответ Google на DELETE пуст (204 No Content), и response.json() на нём
 // бросает. Без этой проверки каждое удавшееся удаление считалось бы
 // отказом, а сверщик повторял бы его вечно.

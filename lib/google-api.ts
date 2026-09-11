@@ -136,6 +136,36 @@ interface CallOptions {
 }
 
 /**
+ * Причины 403, за которыми стоит не потеря доступа, а лимит запросов —
+ * Google отвечает тем же кодом на оба исхода. До этой правки оба лечились
+ * одинаково: `broken_at` и остановка стадии, а единственный описанный выход
+ * с экрана настроек — «Выключить» + «Включить», то есть удаление всего
+ * календаря «Расписание» ради временной заминки (находка I3 финального
+ * ревью). rateLimitExceeded/userRateLimitExceeded — старое семейство ошибок
+ * Calendar API, quotaExceeded — новое; Google не обещает прислать только
+ * одно из трёх, поэтому распознаём все.
+ */
+const RATE_LIMIT_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded']);
+
+/**
+ * Причина отказа 403 из тела ответа Google — если тело вообще пришло
+ * и хоть отдалённо похоже на ожидаемую форму. `undefined` значит «не
+ * поняли», а не «лимита нет»: неопознанное тело неотличимо от чужого
+ * формата ошибки, и в этом случае 403 остаётся потерей доступа — это
+ * безопасная сторона ошибки, лимит хотя бы называет себя явно в `reason`.
+ */
+async function rateLimitReason(response: Response): Promise<string | undefined> {
+  const text = await response.text().catch(() => '');
+  if (!text) return undefined;
+  try {
+    const data = JSON.parse(text) as { error?: { errors?: { reason?: string }[] } };
+    return data.error?.errors?.[0]?.reason;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Клиент к Google. Второй аргумент — подмена fetch, нужна тестам:
  * живого обращения к Google в автоматических тестах нет.
  */
@@ -159,7 +189,19 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
       ...(hasBody ? { body: JSON.stringify(options.body) } : {}),
     });
     if (response.status === 410) throw new SyncTokenExpired();
-    if (response.status === 401 || response.status === 403) throw new CalendarAccessLost();
+    if (response.status === 401) throw new CalendarAccessLost();
+    if (response.status === 403) {
+      // Тело читаем ТОЛЬКО чтобы отличить лимит запросов от настоящей
+      // потери доступа — и не логируем ни при каком исходе, там бывают
+      // названия встреч (см. rateLimitReason выше). Лестница кодов
+      // остаётся одной: ветвление на причину живёт внутри этого же 403,
+      // а не превращается во вторую лестницу рядом.
+      const reason = await rateLimitReason(response);
+      if (reason !== undefined && RATE_LIMIT_REASONS.has(reason)) {
+        throw new Error('Google ответил 403: превышен лимит запросов');
+      }
+      throw new CalendarAccessLost();
+    }
     if (response.status === 404) throw new CalendarGone();
     if (response.status === 409) throw new EventAlreadyExists();
     if (!response.ok) {
