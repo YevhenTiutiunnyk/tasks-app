@@ -3,9 +3,23 @@
 import { useEffect, useState } from 'react';
 import { authClient } from '@/lib/auth-client';
 
-// Просим ровно одно разрешение — на чтение. Прав на запись это приложение
-// не запрашивает ни при каких условиях.
+// Чтение чужих календарей. Просится при подключении и ничего больше
+// не разрешает.
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
+
+// Запись — отдельное разрешение и отдельное согласие, спрашивается только
+// при включении выгрузки. Оно даёт власть ровно над теми календарями,
+// которые завело само приложение, и до встреч человека не дотягивается
+// технически. Полного доступа на запись (calendar, calendar.events) здесь
+// не просят ни при каких условиях.
+const EXPORT_SCOPE = 'https://www.googleapis.com/auth/calendar.app.created';
+
+// Метка «ушли за согласием на запись». Google возвращает человека на
+// /settings, и по ней экран понимает, что пора заводить календарь: без
+// этого шага человек увидел бы «согласие дано», а календаря бы не было.
+// sessionStorage, а не состояние: между уходом и возвратом страница
+// полностью перезагружается.
+const EXPORT_PENDING_KEY = 'google-export-pending';
 
 interface CalendarItem {
   calendarId: string;
@@ -13,7 +27,11 @@ interface CalendarItem {
   selected: boolean;
 }
 
-/** Секция настроек: подключение Google Calendar и выбор календарей галочками. */
+/**
+ * Секция настроек Google Calendar. Две половины с противоположным
+ * поведением: верхняя только читает чужие календари, нижняя заводит и
+ * удаляет наш собственный. Разрешения у них тоже разные и просятся порознь.
+ */
 export default function GoogleCalendarSection() {
   const [items, setItems] = useState<CalendarItem[] | null>(null);
   const [broken, setBroken] = useState(false);
@@ -21,6 +39,18 @@ export default function GoogleCalendarSection() {
   // Кнопка «Повторить» и отключение двигают этот счётчик, и загрузка идёт
   // заново — тот же приём, что у keyReloadToken в app/settings/page.tsx.
   const [reloadToken, setReloadToken] = useState(0);
+
+  // Вторая половина секции — выгрузка. Своё состояние, своя загрузка и свой
+  // отказ: чтение и запись — разные разрешения и разные роуты, и сбой одного
+  // не должен гасить другое.
+  const [exportState, setExportState] = useState<{ enabled: boolean; broken: boolean } | null>(null);
+  const [exportError, setExportError] = useState('');
+  // Роут отличает «нет разрешения» от прочих сбоев, и только в первом случае
+  // человеку есть что нажать — поэтому кнопка согласия появляется по флагу,
+  // а не висит всегда.
+  const [exportNeedsConsent, setExportNeedsConsent] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportReloadToken, setExportReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +78,67 @@ export default function GoogleCalendarSection() {
     })();
     return () => { cancelled = true; };
   }, [reloadToken]);
+
+  // Состояние выгрузки берётся только из нашей базы — роут в Google за ним
+  // не ходит. Поэтому «не включено» здесь всегда значит «не включено»,
+  // а не «не смогли спросить».
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/calendar/export');
+        if (!response.ok) throw new Error();
+        const data = await response.json();
+        if (cancelled) return;
+        setExportState({ enabled: data.enabled, broken: data.broken });
+      } catch {
+        if (!cancelled) {
+          setExportError('Не удалось узнать, включена ли выгрузка.');
+          setExportState((prev) => prev ?? { enabled: false, broken: false });
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [exportReloadToken]);
+
+  // Возврат с согласия Google. Календарь заводит этот POST и только он:
+  // само по себе согласие ничего не создаёт, и без этого шага человек
+  // остался бы с «разрешение дано» и пустым Google.
+  useEffect(() => {
+    if (sessionStorage.getItem(EXPORT_PENDING_KEY) === null) return;
+    // Метку снимаем ДО запроса: иначе неудачный POST повторялся бы при
+    // каждом открытии настроек.
+    sessionStorage.removeItem(EXPORT_PENDING_KEY);
+
+    let cancelled = false;
+    void (async () => {
+      // Внутри асинхронного тела, а не рядом с ним: синхронный setState
+      // в теле эффекта запрещён правилом react-hooks/set-state-in-effect.
+      setExportBusy(true);
+      try {
+        const response = await fetch('/api/calendar/export', { method: 'POST' });
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (response.ok) {
+          setExportError('');
+          setExportNeedsConsent(false);
+        } else {
+          // Текст отказа даёт роут: он один знает, разрешения не хватило
+          // или Google сорвался по другой причине.
+          setExportError(data?.error ?? 'Не удалось включить выгрузку.');
+          setExportNeedsConsent(data?.needsConsent === true);
+        }
+      } catch {
+        if (!cancelled) setExportError('Нет связи с сервером.');
+      } finally {
+        if (!cancelled) {
+          setExportBusy(false);
+          setExportReloadToken((token) => token + 1);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   async function connect() {
     // callbackURL возвращает на эту же страницу — иначе после согласия
@@ -78,11 +169,51 @@ export default function GoogleCalendarSection() {
     setReloadToken((token) => token + 1);
   }
 
+  /** Согласие на запись. Календарь заведётся уже после возврата — по метке. */
+  async function askExportConsent() {
+    sessionStorage.setItem(EXPORT_PENDING_KEY, '1');
+    await authClient.linkSocial({
+      provider: 'google',
+      scopes: [EXPORT_SCOPE],
+      callbackURL: '/settings',
+    });
+  }
+
+  async function turnExportOff() {
+    setExportBusy(true);
+    setExportError('');
+    setExportNeedsConsent(false);
+    try {
+      const response = await fetch('/api/calendar/export', { method: 'DELETE' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setExportError(data?.error ?? 'Не удалось выключить выгрузку.');
+        setExportNeedsConsent(data?.needsConsent === true);
+      }
+    } catch {
+      setExportError('Нет связи с сервером.');
+    } finally {
+      setExportBusy(false);
+      setExportReloadToken((token) => token + 1);
+    }
+  }
+
   const connected = (items?.length ?? 0) > 0;
+  const buttonClass = 'flex h-11 shrink-0 touch-manipulation items-center rounded-lg border '
+    + 'border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline '
+    + 'disabled:opacity-50';
 
   return (
     <section className="space-y-2">
       <h2 className="text-sm font-medium">Google Calendar</h2>
+
+      {/*
+        Заголовок у каждой половины свой. Половины делают противоположные
+        вещи — одна только читает чужое, другая заводит и удаляет своё, —
+        и без подписи человек принял бы их за одну настройку с двумя
+        кнопками.
+      */}
+      <h3 className="text-[13px] font-medium text-muted">Показывать встречи из Google</h3>
 
       {items === null ? (
         <p className="text-xs text-muted">Загружаю…</p>
@@ -135,7 +266,7 @@ export default function GoogleCalendarSection() {
             <button
               type="button"
               onClick={() => void connect()}
-              className="flex h-11 shrink-0 touch-manipulation items-center rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+              className={buttonClass}
             >
               {connected ? 'Подключить заново' : 'Подключить'}
             </button>
@@ -143,7 +274,7 @@ export default function GoogleCalendarSection() {
               <button
                 type="button"
                 onClick={() => void disconnect()}
-                className="flex h-11 shrink-0 touch-manipulation items-center rounded-lg border border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline"
+                className={buttonClass}
               >
                 Отключить
               </button>
@@ -160,12 +291,93 @@ export default function GoogleCalendarSection() {
           */}
           <p className="text-xs text-muted">
             «Отключить» убирает копию календаря из приложения и останавливает
-            синхронизацию, но не отзывает разрешение у Google — оно одно и то
-            же со входом, и его отзыв закрыл бы вход в приложение. Отозвать
-            доступ можно только в настройках аккаунта Google.
+            синхронизацию, но в самом Google ничего не меняет: встречи и
+            календари остаются на месте, мы их не трогаем. Разрешение у Google
+            тоже не отзывается — оно одно и то же со входом, и его отзыв закрыл
+            бы вход в приложение. Отозвать доступ можно только в настройках
+            аккаунта Google.
           </p>
         </>
       )}
+
+      <div className="space-y-2 border-t border-hairline pt-3">
+        <h3 className="text-[13px] font-medium text-muted">Выгружать мои задачи в Google</h3>
+
+        {exportState === null ? (
+          <p className="text-xs text-muted">Загружаю…</p>
+        ) : (
+          <>
+            {exportError && <p className="text-xs text-red-600">{exportError}</p>}
+
+            {exportState.broken && (
+              <p className="text-xs text-red-600">
+                Выгрузка остановлена: Google больше не пускает нас в календарь
+                «Расписание». Выключи её и включи снова — заведём новый календарь.
+                Если старое «Расписание» осталось в Google, его придётся удалить
+                там руками.
+              </p>
+            )}
+
+            {!exportState.enabled && (
+              <p className="text-xs text-muted">
+                Заведём в Google отдельный календарь «Расписание» и будем держать
+                в нём твои задачи. Разрешение спросим отдельное — только на
+                календари, созданные этим приложением: до остальных твоих встреч
+                оно доступа не даёт.
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              {exportState.enabled ? (
+                <button
+                  type="button"
+                  disabled={exportBusy}
+                  onClick={() => void turnExportOff()}
+                  className={buttonClass}
+                >
+                  Выключить
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={exportBusy}
+                  onClick={() => void askExportConsent()}
+                  className={buttonClass}
+                >
+                  Включить
+                </button>
+              )}
+              {exportNeedsConsent && (
+                <button
+                  type="button"
+                  disabled={exportBusy}
+                  onClick={() => void askExportConsent()}
+                  className={buttonClass}
+                >
+                  Дать разрешение заново
+                </button>
+              )}
+            </div>
+
+            {/*
+              Эта половина ведёт себя ПРОТИВОПОЛОЖНО верхней, и об этом надо
+              сказать вслух под самой кнопкой. Наверху «Отключить» не меняет
+              в Google ничего; здесь «Выключить» удаляет там целый календарь
+              вместе со всем, что мы в него выгрузили. Не напиши мы разницу
+              прямо здесь, человек решил бы, что одна из подписей врёт.
+            */}
+            {exportState.enabled && (
+              <p className="text-xs text-muted">
+                «Выключить» удаляет календарь «Расписание» в Google целиком —
+                вместе со всеми выгруженными в него задачами. Это насовсем,
+                вернуть их оттуда будет нечем. Других календарей и встреч это
+                не касается: мы удаляем только тот календарь, который завели
+                сами.
+              </p>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 }
