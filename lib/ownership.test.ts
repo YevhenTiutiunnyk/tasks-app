@@ -1751,6 +1751,53 @@ run('изоляция по владельцу', () => {
         await sql`delete from notifications_sent where key in (${taskA}, ${taskB})`;
       }
     });
+
+    // Задача 8: синхронизация календаря и выгрузка задач идут отдельными
+    // проходами ПОСЛЕ напоминаний и отчёта у каждого владельца — ровно затем,
+    // чтобы сбой или задержка любой из этих двух стадий не мог унести с собой
+    // уже отработавшие напоминания. У idA/idB здесь нет ни google_calendars,
+    // ни google_export (эти таблицы в файле заполняются только в блоках ниже,
+    // идущих по файлу позже, — на момент этого теста они пусты), поэтому обе
+    // стадии обязаны молча no-op'нуться, не трогая Google и не требуя для
+    // этого никакого мока. Проверяет именно то свойство, ради которого стадия
+    // выгрузки вынесена отдельным проходом (задача 8): её присутствие не
+    // должно быть способно испортить ответ роута или напоминания над ней.
+    it('без строк календаря и выгрузки обе стадии не мешают напоминаниям и отвечают нулём', async () => {
+      await saveTimezone(idA, 'UTC');
+      await saveSettings(idA, { ...DEFAULT_SETTINGS, notifyBeforeMinutes: 60 });
+
+      const { today, nowMinute } = nowInZone('UTC');
+      const pos = inMinutes(today, nowMinute, 10);
+      const taskA = await insertDueTask(idA, 'ZZ-без-календаря', pos.date, pos.startMinute);
+
+      const endpointA = 'https://zz.invalid/push/no-calendar-a';
+      await addSubscription(idA, { endpoint: endpointA, p256dh: 'pnca', auth: 'anca' });
+
+      try {
+        pushed.calls = [];
+        const response = await notifyPost(new Request('http://t/api/notify', {
+          method: 'POST',
+          headers: { 'x-notify-secret': process.env.NOTIFY_SECRET! },
+        }));
+        expect(response.status).toBe(200);
+
+        // Стадии реально прошли (роут не упал раньше них) и честно вернули
+        // нули — у обоих владельцев в этом прогоне нет ни одной строки
+        // ни в google_calendars, ни в google_export.
+        const body = await response.json();
+        expect(body.calendarsSynced).toBe(0);
+        expect(body.exported).toBe(0);
+
+        // Напоминание при этом дошло — стадии ниже по файлу его не задели.
+        const forA = pushed.calls.filter((c) => c.endpoint === endpointA);
+        expect(forA).toHaveLength(1);
+        expect(JSON.parse(forA[0].payload).title).toBe('ZZ-без-календаря');
+      } finally {
+        await removeSubscription(idA, endpointA);
+        await sql`delete from tasks where id = ${taskA}`;
+        await sql`delete from notifications_sent where key = ${taskA}`;
+      }
+    });
   });
 
   // Отдельным блоком и последним: тест засевает журнал десятками строк
