@@ -165,7 +165,7 @@ interface CallOptions {
  * userRateLimitExceeded — старое семейство ошибок Calendar API,
  * quotaExceeded — новое, dailyLimitExceeded/dailyLimitExceededUnreg/
  * userRateLimitExceededUnreg — суточная квота (в т.ч. у проекта без
- * биллинга). Нераспознанная причина остаётся `CalendarAccessLost» — это
+ * биллинга). Нераспознанная причина остаётся `CalendarAccessLost` — это
  * безопасная сторона ошибки в обычном случае, но именно суточное
  * исчерпание квоты задевает ВСЕХ владельцев разом: не распознай мы его,
  * весь проект пометился бы сломанным одновременно, притом что I3a должна
