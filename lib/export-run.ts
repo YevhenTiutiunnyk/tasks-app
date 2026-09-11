@@ -1,8 +1,12 @@
 import 'server-only';
 import type { GoogleEvent } from './calendar';
 import { addDays } from './dates';
-import { diffExport, draftFor, exportableTasks, exportWindow, fingerprintOf } from './export';
-import { CalendarAccessLost, CalendarGone, type CalendarClient } from './google-api';
+import {
+  diffExport, draftFor, eventIdFor, exportableTasks, exportWindow, fingerprintOf,
+} from './export';
+import {
+  CalendarAccessLost, CalendarGone, EventAlreadyExists, type CalendarClient,
+} from './google-api';
 import {
   deleteLink, getExport, getLinks, getTimezone, saveExportState, saveLink,
   type ExportLink, type ExportRow,
@@ -123,7 +127,21 @@ export async function exportUser(
       });
       return;
     }
-    const eventId = await client.insertEvent(calendarId, draft);
+    let eventId: string;
+    try {
+      eventId = await client.insertEvent(calendarId, draft);
+    } catch (error) {
+      if (!(error instanceof EventAlreadyExists)) throw error;
+      // 409: событие с выведенным из ключа идентификатором в календаре уже
+      // лежит. Значит, прошлая попытка дошла до Google, а до нашей базы нет
+      // (упала запись связки) — или два тика планировщика наложились друг
+      // на друга. Это не отказ: создавать нечего, надо довести событие до
+      // текущего вида и, главное, записать связку — без неё следующий проход
+      // пришёл бы сюда же снова. Идентификатор берём тот же самый, выведенный:
+      // ответа с ним у 409 нет, а гадать не о чем — он детерминированный.
+      eventId = eventIdFor(op.task.id);
+      await client.patchEvent(calendarId, eventId, draft);
+    }
     await deps.saveLink(userId, {
       taskKey: op.task.id, eventId, fingerprint: fingerprintOf(op.task),
     });

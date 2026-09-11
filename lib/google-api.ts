@@ -1,9 +1,10 @@
 import 'server-only';
 import type { GoogleEvent } from './calendar';
-// Только тип: lib/export.ts обязан остаться чистым (ни базы, ни сети, ни
-// server-only), иначе его тесты перестанут запускаться без окружения.
-// type-import стирается при сборке и кольца зависимостей не создаёт.
-import type { EventDraft } from './export';
+// lib/export.ts обязан остаться чистым (ни базы, ни сети, ни server-only),
+// иначе его тесты перестанут запускаться без окружения. Зависимость идёт
+// в эту сторону — «грязный» модуль тянет чистый, — и кольца не создаёт:
+// export.ts про этот файл не знает.
+import { eventIdFor, type EventDraft } from './export';
 
 const BASE = 'https://www.googleapis.com/calendar/v3';
 
@@ -15,6 +16,16 @@ export class CalendarAccessLost extends Error {}
 
 /** 404: календаря или события больше нет. Не отказ доступа — другое лечение. */
 export class CalendarGone extends Error {}
+
+/**
+ * 409: событие с таким идентификатором в календаре уже есть.
+ *
+ * Возможно только с тех пор, как идентификатор выводится из ключа задачи
+ * (eventIdFor в lib/export.ts): раньше его назначал Google и столкнуться
+ * было не с чем. Это не отказ, а успех наоборот — «то, что ты просишь
+ * создать, уже создано», — и лечится правкой того же идентификатора.
+ */
+export class EventAlreadyExists extends Error {}
 
 export interface ListEventsParams {
   syncToken?: string;
@@ -85,8 +96,16 @@ function eventBody(draft: EventDraft) {
     end: { dateTime: `${draft.endDate}T${clock(draft.endMinute)}`, timeZone: draft.timeZone },
     // Метка своего события. Нужна полной сверке: если таблица связок
     // потеряется, а календарь останется, без неё сверка создала бы всё
-    // заново и получились бы дубли.
+    // заново и получились бы дубли. Выведенный идентификатор её НЕ заменяет:
+    // сверка ищет наши события в чужом списке, а не проверяет догадку об id.
     extendedProperties: { private: { taskKey: draft.taskKey } },
+    // Всегда явно «живое». На создании это и так умолчание, а вот на правке
+    // несёт вес: правкой мы чиним ответ 409 на создание, а один из поводов
+    // для 409 — событие с этим идентификатором в календаре уже БЫЛО и было
+    // удалено (Google помнит идентификаторы удалённых). Без этого поля
+    // правка оставила бы его отменённым, и задача, удалённая и возвращённая
+    // отменой, больше никогда не показалась бы в календаре.
+    status: 'confirmed',
   };
 }
 
@@ -142,6 +161,7 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
     if (response.status === 410) throw new SyncTokenExpired();
     if (response.status === 401 || response.status === 403) throw new CalendarAccessLost();
     if (response.status === 404) throw new CalendarGone();
+    if (response.status === 409) throw new EventAlreadyExists();
     if (!response.ok) {
       // Тело не читаем и в лог не кладём: там могут быть названия встреч.
       throw new Error(`Google ответил ${response.status}`);
@@ -179,7 +199,11 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
     },
     async insertEvent(calendarId, draft) {
       const data = await call(`${BASE}/calendars/${encodeURIComponent(calendarId)}/events`, {
-        method: 'POST', body: eventBody(draft),
+        // Идентификатор задаём САМИ и выводим его из ключа задачи — только
+        // это и делает создание идемпотентным. Уберёшь `id` отсюда, и Google
+        // снова начнёт назначать случайный: повтор создания перестанет
+        // отвечать 409 и вернёт вечный дубль (см. eventIdFor в lib/export.ts).
+        method: 'POST', body: { id: eventIdFor(draft.taskKey), ...eventBody(draft) },
       });
       return requireId(data);
     },

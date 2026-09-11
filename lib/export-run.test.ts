@@ -1,8 +1,10 @@
 import { expect, test } from 'vitest';
-import { CalendarAccessLost, CalendarGone, type CalendarClient } from './google-api';
+import {
+  CalendarAccessLost, CalendarGone, googleClient, type CalendarClient,
+} from './google-api';
 import { exportManyUsers, exportUser, reconcileLinks, type ExportDeps } from './export-run';
 import { addDays } from './dates';
-import { exportWindow, fingerprintOf } from './export';
+import { eventIdFor, exportWindow, fingerprintOf } from './export';
 import type { ExportLink, ExportRow } from './db';
 import type { Task } from './types';
 import type { GoogleEvent } from './calendar';
@@ -749,4 +751,138 @@ test('сбой сети во время сверки не мешает обыч�
   await exportManyUsers(deps, [{ userId: 'user', today: TODAY }], now, FOREVER);
   expect(state.inserted).toEqual([{ userId: 'user', taskKey: 't1' }]);
   expect(state.saved.some((s) => s.userId === 'user' && s.patch.reconciledAt)).toBe(false);
+});
+
+/* ---------- шов «Google записал, база не записала» ---------- */
+
+/**
+ * Поддельный Google, хранящий события по идентификатору, — и настоящий
+ * googleClient поверх него.
+ *
+ * Почему не подделка CalendarClient, как во всех тестах выше: проверяется
+ * ровно то, что идентификатор события задаём МЫ и выводим его из ключа
+ * задачи. Подделка клиента получает уже готовый draft и об идентификаторе
+ * ничего не знает — ей пришлось бы вывести его самой, то есть повторить
+ * проверяемое. Тогда мутация «убрать `id` из тела запроса» (это и значит
+ * «сделать создание снова неидемпотентным») осталась бы незамеченной.
+ * Здесь тело запроса разбирается так же, как его разобрал бы Google:
+ * нет `id` — идентификатор выдаётся случайный, и второе создание заводит
+ * ВТОРОЕ событие вместо ответа 409.
+ */
+function fakeCalendar() {
+  const events = new Map<string, Record<string, unknown>>();
+  let generated = 0;
+  const fetcher = async (url: string, init: RequestInit) => {
+    const method = init.method ?? 'GET';
+    const body = init.body ? JSON.parse(init.body as string) as Record<string, unknown> : {};
+    const path = new URL(url).pathname;
+    const eventId = decodeURIComponent(path.split('/events/')[1] ?? '');
+
+    if (method === 'POST') {
+      generated += 1;
+      const id = typeof body.id === 'string' ? body.id : `случайный-${generated}`;
+      if (events.has(id)) return new Response('{}', { status: 409 });
+      events.set(id, { ...body, id });
+      return new Response(JSON.stringify({ id }), { status: 200 });
+    }
+    if (method === 'PATCH') {
+      const existing = events.get(eventId);
+      if (!existing) return new Response('{}', { status: 404 });
+      events.set(eventId, { ...existing, ...body, id: eventId });
+      return new Response(JSON.stringify({ id: eventId }), { status: 200 });
+    }
+    if (method === 'DELETE') {
+      if (!events.delete(eventId)) return new Response('{}', { status: 404 });
+      return new Response(null, { status: 204 });
+    }
+    return new Response(JSON.stringify({ items: [...events.values()] }), { status: 200 });
+  };
+  return { events, fetcher };
+}
+
+/**
+ * Зависимости с ЖИВОЙ таблицей связок и настоящим клиентом Google поверх
+ * поддельной сети. Живая таблица здесь несущая: весь смысл проверки в том,
+ * что второй проход видит последствия первого (или не видит — когда запись
+ * связки сорвалась).
+ */
+function liveDeps(
+  fetcher: (url: string, init: RequestInit) => Promise<Response>,
+  tasks: Task[],
+) {
+  const state = { links: [] as ExportLink[], saveLinkFails: false };
+  const deps: ExportDeps = {
+    getExport: async () => ({
+      calendarId: 'cal-1', enabled: true, syncedAt: null, reconciledAt: null, brokenAt: null,
+    }),
+    saveExportState: async () => {},
+    getLinks: async () => state.links,
+    saveLink: async (_u, link) => {
+      if (state.saveLinkFails) throw new Error('пул соединений исчерпан');
+      state.links = [...state.links.filter((l) => l.taskKey !== link.taskKey), link];
+    },
+    deleteLink: async (_u, key) => {
+      state.links = state.links.filter((l) => l.taskKey !== key);
+    },
+    loadRange: async () => tasks,
+    getTimezone: async () => 'Europe/Amsterdam',
+    clientFor: async () => googleClient('zz-token', fetcher),
+  };
+  return { deps, state };
+}
+
+// Находка I1 финального ревью, и тот самый шов, который до сих пор не был
+// закрыт ни одним тестом: запись в Google удалась, запись в базу — нет.
+// Событие уже лежит в календаре с нашей меткой, связки на него нет, и через
+// пять минут разбор разницы снова не видит связки. Пока идентификатор
+// назначал Google, здесь заводилось ВТОРОЕ событие — навсегда: разбор
+// разницы убирает только СВЯЗАННЫЕ лишние события, а суточная сверка чинит
+// только связки и мимо этого дубля проходит (связка на ключ уже есть).
+test('сбой записи связки после удачного создания не плодит второе событие', async () => {
+  const google = fakeCalendar();
+  const tasks = [task()];
+  const { deps, state } = liveDeps(google.fetcher, tasks);
+
+  state.saveLinkFails = true;
+  const first = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+  expect(first.failed).toBe(1);
+  expect(google.events.size).toBe(1);
+  expect(state.links).toEqual([]);
+
+  // Следующий проход. Задача успела поменяться — заодно видно, что 409
+  // не просто проглочен, а событие доведено до текущего вида задачи.
+  tasks[0] = task({ title: 'ZZ-другое название' });
+  state.saveLinkFails = false;
+  const second = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+
+  expect(google.events.size).toBe(1);
+  expect(second).toEqual({ applied: 1, failed: 0 });
+  expect(state.links).toEqual([
+    { taskKey: 't1', eventId: eventIdFor('t1'), fingerprint: fingerprintOf(tasks[0]) },
+  ]);
+  expect([...google.events.values()][0]).toMatchObject({
+    id: eventIdFor('t1'), summary: 'ZZ-другое название', status: 'confirmed',
+  });
+});
+
+// Тот же дубль достижим вообще без сбоя базы: synced_at пишется в КОНЦЕ
+// прохода, замка нет, и если один проход затянулся дольше минуты, следующий
+// тик планировщика считает ту же разницу по той же пустой таблице связок.
+test('наложившиеся проходы планировщика не плодят второе событие', async () => {
+  const google = fakeCalendar();
+  const { deps, state } = liveDeps(google.fetcher, [task()]);
+
+  // Второй проход начался, пока первый ещё не дописал связку: таблица для
+  // него та же, что была в начале первого.
+  const stale: ExportLink[] = [];
+  deps.getLinks = async () => stale;
+
+  await exportUser(deps, 'zz-user', TODAY, FOREVER);
+  const second = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+
+  expect(google.events.size).toBe(1);
+  expect(second.failed).toBe(0);
+  expect(state.links).toEqual([
+    { taskKey: 't1', eventId: eventIdFor('t1'), fingerprint: fingerprintOf(task()) },
+  ]);
 });

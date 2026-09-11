@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest';
-import { diffExport, draftFor, eventTitle, exportWindow, exportableTasks, fingerprintOf } from './export';
+import {
+  diffExport, draftFor, eventIdFor, eventTitle, exportWindow, exportableTasks, fingerprintOf,
+} from './export';
 import type { Task } from './types';
 import type { ExportLink } from './db';
 
@@ -126,4 +128,23 @@ test('задача, переваливающая за полночь, конча
 
 test('выполненная задача уезжает с галочкой', () => {
   expect(draftFor(task({ done: true }), 'Europe/Amsterdam').summary).toBe('✓ ZZ-тренировка');
+});
+
+/* ---------- eventIdFor: идентификатор события, выведенный из ключа ---------- */
+
+// Google принимает для event.id набор base32hex: строчные a–v и цифры,
+// длиной 5–1024. Шестнадцатеричные цифры — его строгое подмножество.
+// Ошибись мы набором — отказ приходил бы на КАЖДОМ создании события.
+test('идентификатор события укладывается в набор и длину, которые принимает Google', () => {
+  const id = eventIdFor('occ:11111111-2222-3333-4444-555555555555:2026-09-10');
+  expect(id).toMatch(/^[0-9a-v]+$/);
+  expect(id.length).toBe(32);
+  expect(id.length).toBeGreaterThanOrEqual(5);
+});
+
+// Вся идемпотентность создания держится ровно на этом: тот же ключ — тот же
+// идентификатор, и второе создание получает 409 вместо второго события.
+test('один и тот же ключ всегда даёт один и тот же идентификатор', () => {
+  expect(eventIdFor('t1')).toBe(eventIdFor('t1'));
+  expect(eventIdFor('t1')).not.toBe(eventIdFor('t2'));
 });

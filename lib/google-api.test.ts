@@ -1,5 +1,8 @@
 import { expect, test } from 'vitest';
-import { CalendarAccessLost, CalendarGone, SyncTokenExpired, eventsUrl, googleClient } from './google-api';
+import {
+  CalendarAccessLost, CalendarGone, EventAlreadyExists, SyncTokenExpired, eventsUrl, googleClient,
+} from './google-api';
+import { eventIdFor } from './export';
 
 test('первая загрузка просит окно и разворачивает повторы', () => {
   const url = new URL(eventsUrl('primary', { timeMin: '2026-08-08T00:00:00.000Z', timeMax: '2026-12-08T00:00:00.000Z' }));
@@ -52,10 +55,12 @@ const draft = {
 };
 
 interface EventPayload {
+  id?: string;
   summary: string;
   start: unknown;
   end: unknown;
   extendedProperties: { private: { taskKey: string } };
+  status?: string;
 }
 
 /** Что ушло в Google: адрес, метод, заголовки и тело одного запроса. */
@@ -95,6 +100,41 @@ test('создание события шлёт POST по адресу событ
   expect(body.start).toEqual({ dateTime: '2026-09-10T10:00:00', timeZone: 'Europe/Amsterdam' });
   expect(body.end).toEqual({ dateTime: '2026-09-10T11:00:00', timeZone: 'Europe/Amsterdam' });
   expect(body.extendedProperties.private.taskKey).toBe('t1');
+});
+
+// Идентификатор задаём мы, а не Google, — и только это делает создание
+// идемпотентным: повтор получает 409 вместо второго события. Убери `id`
+// из тела, и дубль из находки I1 снова станет представимым.
+test('создание задаёт идентификатор события, выведенный из ключа задачи', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  await googleClient('zz-token', fetcher).insertEvent('cal-1', draft);
+  const body = JSON.parse(sent.body!) as EventPayload;
+  expect(body.id).toBe(eventIdFor('t1'));
+  // Набор символов и длина — требование Google к event.id (base32hex, 5–1024).
+  // Проверяется здесь, на границе с Google, а не только в чистом тесте
+  // eventIdFor: цена ошибки — отказ на КАЖДОМ создании события.
+  expect(body.id).toMatch(/^[0-9a-v]{5,1024}$/);
+});
+
+// Правка идёт по адресу, а идентификатор в теле Google на PATCH менять
+// не даёт. Отправь мы его и сюда — правка события со старым, случайным
+// идентификатором (такие остались от прежней схемы) получила бы отказ.
+test('правка идентификатор в теле не шлёт', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  await googleClient('zz-token', fetcher).patchEvent('cal-1', 'e-старое-случайное', draft);
+  expect((JSON.parse(sent.body!) as EventPayload).id).toBeUndefined();
+});
+
+// 409 — не отказ, а «уже создано». Своя ветка в той же единственной
+// лестнице кодов: спутав его с CalendarGone, мы пометили бы связь сломанной
+// (404 на создании значит «пропал календарь»), а спутав с общей Error —
+// повторяли бы обречённое создание каждые пять минут.
+test('409 при создании — EventAlreadyExists, а не пропавший календарь', async () => {
+  const client = googleClient('zz-token', async () => new Response('{}', { status: 409 }));
+  const error = await client.insertEvent('cal-1', draft).catch((e) => e);
+  expect(error).toBeInstanceOf(EventAlreadyExists);
+  expect(error).not.toBeInstanceOf(CalendarGone);
+  expect(error).not.toBeInstanceOf(CalendarAccessLost);
 });
 
 test('идентификатор календаря в адресе события экранируется', async () => {
@@ -201,6 +241,11 @@ test('правка события шлёт PATCH тем же телом, что 
     start: { dateTime: '2026-09-10T10:00:00', timeZone: 'Europe/Amsterdam' },
     end: { dateTime: '2026-09-10T11:00:00', timeZone: 'Europe/Amsterdam' },
     extendedProperties: { private: { taskKey: 't1' } },
+    // Правкой чинится ответ 409 на создание, а один из поводов для 409 —
+    // событие с этим идентификатором уже было и было удалено. Без явного
+    // «живое» правка оставила бы его отменённым: задача, удалённая
+    // и возвращённая отменой, в календаре больше не показалась бы никогда.
+    status: 'confirmed',
   });
 });
 
