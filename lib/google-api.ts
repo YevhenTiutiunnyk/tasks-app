@@ -159,27 +159,47 @@ interface CallOptions {
  * одинаково: `broken_at` и остановка стадии, а единственный описанный выход
  * с экрана настроек — «Выключить» + «Включить», то есть удаление всего
  * календаря «Расписание» ради временной заминки (находка I3 финального
- * ревью). rateLimitExceeded/userRateLimitExceeded — старое семейство ошибок
- * Calendar API, quotaExceeded — новое; Google не обещает прислать только
- * одно из трёх, поэтому распознаём все.
+ * ревью).
+ *
+ * Список пополнен хвостом №2 повторного ревью: rateLimitExceeded/
+ * userRateLimitExceeded — старое семейство ошибок Calendar API,
+ * quotaExceeded — новое, dailyLimitExceeded/dailyLimitExceededUnreg/
+ * userRateLimitExceededUnreg — суточная квота (в т.ч. у проекта без
+ * биллинга). Нераспознанная причина остаётся `CalendarAccessLost» — это
+ * безопасная сторона ошибки в обычном случае, но именно суточное
+ * исчерпание квоты задевает ВСЕХ владельцев разом: не распознай мы его,
+ * весь проект пометился бы сломанным одновременно, притом что I3a должна
+ * была закрыть ровно этот класс отказов.
  */
-const RATE_LIMIT_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded']);
+const RATE_LIMIT_REASONS = new Set([
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'quotaExceeded',
+  'dailyLimitExceeded',
+  'dailyLimitExceededUnreg',
+  'userRateLimitExceededUnreg',
+]);
 
 /**
- * Причина отказа 403 из тела ответа Google — если тело вообще пришло
- * и хоть отдалённо похоже на ожидаемую форму. `undefined` значит «не
- * поняли», а не «лимита нет»: неопознанное тело неотличимо от чужого
- * формата ошибки, и в этом случае 403 остаётся потерей доступа — это
- * безопасная сторона ошибки, лимит хотя бы называет себя явно в `reason`.
+ * Отвечает ли тело 403 лимитом запросов — если тело вообще пришло и хоть
+ * отдалённо похоже на ожидаемую форму. `false` значит «не поняли», а не
+ * «лимита нет»: неопознанное тело неотличимо от чужого формата ошибки,
+ * и в этом случае 403 остаётся потерей доступа — безопасная сторона
+ * ошибки, лимит хотя бы называет себя явно в `reason`.
+ *
+ * Проверяются ВСЕ элементы `errors[]`, а не только первый (хвост №2
+ * повторного ревью): Google не гарантирует порядок, и причина лимита
+ * может оказаться не первой в списке.
  */
-async function rateLimitReason(response: Response): Promise<string | undefined> {
+async function isRateLimitReason(response: Response): Promise<boolean> {
   const text = await response.text().catch(() => '');
-  if (!text) return undefined;
+  if (!text) return false;
   try {
     const data = JSON.parse(text) as { error?: { errors?: { reason?: string }[] } };
-    return data.error?.errors?.[0]?.reason;
+    const errors = data.error?.errors ?? [];
+    return errors.some((entry) => entry.reason !== undefined && RATE_LIMIT_REASONS.has(entry.reason));
   } catch {
-    return undefined;
+    return false;
   }
 }
 
@@ -211,11 +231,10 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
     if (response.status === 403) {
       // Тело читаем ТОЛЬКО чтобы отличить лимит запросов от настоящей
       // потери доступа — и не логируем ни при каком исходе, там бывают
-      // названия встреч (см. rateLimitReason выше). Лестница кодов
+      // названия встреч (см. isRateLimitReason выше). Лестница кодов
       // остаётся одной: ветвление на причину живёт внутри этого же 403,
       // а не превращается во вторую лестницу рядом.
-      const reason = await rateLimitReason(response);
-      if (reason !== undefined && RATE_LIMIT_REASONS.has(reason)) {
+      if (await isRateLimitReason(response)) {
         throw new Error('Google ответил 403: превышен лимит запросов');
       }
       throw new CalendarAccessLost();

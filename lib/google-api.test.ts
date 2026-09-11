@@ -201,7 +201,19 @@ test('403 при записи по-прежнему означает потер�
 // Находка I3 финального ревью: Google отдаёт 403 и на превышение лимита
 // запросов, и до этой правки оба исхода лечились как потеря доступа —
 // broken_at и остановка стадии, хотя разрешение цело и дело только в темпе.
-for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceeded']) {
+// Список причин пополнен хвостом №2 повторного ревью: dailyLimitExceeded
+// и её родня — суточная квота, а не темп запросов конкретно этой минуты,
+// но лечится 403-ветка та же самая. Пропусти мы их — они падали бы
+// в CalendarAccessLost, а суточное исчерпание квоты задевает ВСЕХ
+// владельцев разом: весь проект пометился бы сломанным одновременно.
+for (const reason of [
+  'rateLimitExceeded',
+  'userRateLimitExceeded',
+  'quotaExceeded',
+  'dailyLimitExceeded',
+  'dailyLimitExceededUnreg',
+  'userRateLimitExceededUnreg',
+]) {
   test(`403 с причиной ${reason} — не потеря доступа, а погода`, async () => {
     const secretBody = JSON.stringify({
       error: { errors: [{ domain: 'usageLimits', reason, message: 'ZZ-секретное название встречи' }] },
@@ -216,6 +228,25 @@ for (const reason of ['rateLimitExceeded', 'userRateLimitExceeded', 'quotaExceed
     expect(error.message).not.toContain('ZZ');
   });
 }
+
+// Хвост №2 повторного ревью, вторая половина: причина лимита может
+// оказаться НЕ первой в errors[] (Google не гарантирует порядок). Прежняя
+// реализация смотрела только на errors[0] и пропустила бы этот случай
+// в CalendarAccessLost.
+test('причина лимита распознаётся не только в errors[0]', async () => {
+  const body = JSON.stringify({
+    error: {
+      errors: [
+        { domain: 'usageLimits', reason: 'ZZ-незнакомая-первой' },
+        { domain: 'usageLimits', reason: 'quotaExceeded' },
+      ],
+    },
+  });
+  const client = googleClient('zz-token', async () => new Response(body, { status: 403 }));
+  const error = await client.insertEvent('cal-1', draft).catch((e) => e);
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toBeInstanceOf(CalendarAccessLost);
+});
 
 // Неопознанное тело 403 (не JSON, нет нужного поля, незнакомая причина) —
 // безопасная сторона ошибки: остаётся потерей доступа, как было всегда.
