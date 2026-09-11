@@ -47,18 +47,28 @@ export async function POST(request: Request) {
   // с согласия Google, а туда можно вернуться и по кнопке «назад».
   // Без этой проверки второй заход завёл бы ВТОРОЙ календарь «Расписание»,
   // и первый повис бы у человека сиротой — указателя на него у нас уже
-  // не осталось бы. Сломанную выгрузку проверка нарочно пропускает: там
-  // старого календаря либо нет вовсе (его удалили руками), либо мы в него
-  // всё равно больше не попадём.
+  // не осталось бы.
+  //
+  // Сломанная выгрузка проверку НЕ обходит, хотя соблазн есть: broken_at
+  // ставится и на CalendarAccessLost (lib/export-run.ts), а это значит
+  // «мы не можем в календарь», а вовсе не «календаря нет». Обойди мы
+  // проверку здесь, повторное включение после потери доступа завело бы
+  // новый календарь и перенацелило бы calendar_id — и живое первое
+  // «Расписание» осталось бы в Google навсегда без единого указателя
+  // с нашей стороны. Ровно та беда, ради которой в DELETE задан порядок,
+  // только через парадную дверь (находка ревью). Выход из сломанного
+  // состояния один и он же правильный: сперва «Выключить» (оно терпит
+  // CalendarGone и потому срабатывает и когда календарь удалили руками),
+  // и только потом «Включить» заново.
   const current = await getExport(user.userId);
-  if (current?.enabled && current.calendarId && current.brokenAt === null) {
+  if (current?.enabled && current.calendarId) {
     return NextResponse.json({ enabled: true });
   }
 
+  let calendarId: string;
   try {
     const client = await getCalendarClient(user.userId);
-    const calendarId = await client.createCalendar(EXPORT_CALENDAR_SUMMARY);
-    await enableExport(user.userId, calendarId);
+    calendarId = await client.createCalendar(EXPORT_CALENDAR_SUMMARY);
   } catch (error) {
     if (error instanceof CalendarAccessLost) {
       // В лог — только стадия: ни адреса, ни владельца, ни названий.
@@ -70,6 +80,23 @@ export async function POST(request: Request) {
     }
     console.error('export: включение не удалось');
     return NextResponse.json({ error: 'Не удалось завести календарь в Google' }, { status: 500 });
+  }
+
+  // Отдельный try, и вот почему. Календарь в Google уже создан, а строки
+  // с указателем на него ещё нет. Скажи мы здесь «не удалось завести
+  // календарь» (а до находки ревью оба шага сидели в одном catch и отвечали
+  // именно так), человек никогда не пошёл бы искать сироту — мы бы сами
+  // уверили его, что искать нечего. Компенсирующее удаление не делаем:
+  // это второй поход в Google на пути отказа, со своим отказом. Но врать
+  // про то, чего мы не знаем, нельзя.
+  try {
+    await enableExport(user.userId, calendarId);
+  } catch {
+    console.error('export: календарь заведён, но выгрузка не включилась');
+    return NextResponse.json({
+      error: 'Календарь «Расписание» в Google, похоже, уже заведён, а включить выгрузку не вышло. '
+        + 'Загляни в Google: если он там появился, удали его руками и попробуй снова.',
+    }, { status: 500 });
   }
 
   return NextResponse.json({ enabled: true });
@@ -104,6 +131,13 @@ export async function DELETE(request: Request) {
       if (!(error instanceof CalendarGone)) {
         // Строку НЕ трогаем: календарь в Google жив, и она — единственное,
         // чем его ещё можно будет удалить.
+        // ВНИМАНИЕ, ЭТО ОДНО ИЗМЕНЕНИЕ, А НЕ ДВА. Оставлять строку при
+        // потере доступа безопасно ровно потому, что на экране есть кнопка
+        // «Дать разрешение заново» (app/settings/google-calendar.tsx),
+        // и после согласия она ПОВТОРЯЕТ это самое выключение. Убери её —
+        // и человек застрянет: выключить нельзя (Google не пускает),
+        // а позвать согласие в состоянии «включено» больше нечем. Тогда
+        // здесь придётся решать заново, что делать с указателем.
         if (error instanceof CalendarAccessLost) {
           console.error('export: выключение — Google не пускает нас в календарь');
           return NextResponse.json({

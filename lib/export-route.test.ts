@@ -55,6 +55,7 @@ vi.mock('@/lib/google-token', () => ({
   },
 }));
 
+import { readFileSync } from 'node:fs';
 import { sql } from '@/lib/db';
 import { DELETE, GET, POST } from '@/app/api/calendar/export/route';
 
@@ -151,6 +152,41 @@ run('/api/calendar/export', () => {
     expect(await row()).toMatchObject({ calendar_id: 'zz-export-calendar' });
   });
 
+  it('POST при СЛОМАННОЙ выгрузке второго календаря тоже не заводит', async () => {
+    await post();
+    // broken_at ставит планировщик — в том числе на потерю доступа
+    // (lib/export-run.ts), когда календарь в Google жив-здоров.
+    await sql`update google_export set broken_at = now() where user_id = ${USER_ID}`;
+    google.created = [];
+
+    const response = await post();
+
+    // Заведи мы здесь новый календарь, enableExport перенацелил бы
+    // calendar_id — и живое первое «Расписание» осталось бы в Google
+    // навсегда без единого указателя с нашей стороны. Та же беда, от которой
+    // защищает порядок в DELETE, только с парадного входа (находка ревью).
+    expect(response.status).toBe(200);
+    expect(google.created).toEqual([]);
+    expect(await row()).toMatchObject({ calendar_id: 'zz-export-calendar' });
+  });
+
+  it('POST при сбое базы ПОСЛЕ создания календаря не врёт, что календаря нет', async () => {
+    // Строка не вставится: владельца больше нет, а user_id в google_export —
+    // внешний ключ на "user". Календарь при этом в Google уже создан.
+    await sql`delete from "user" where id = ${USER_ID}`;
+
+    const response = await post();
+
+    expect(response.status).toBe(500);
+    expect(google.created).toEqual(['Расписание']);
+    const body = await response.json();
+    // «Не удалось завести календарь в Google» здесь было бы ложью: календарь
+    // заведён, и человек, поверив, никогда не пошёл бы искать сироту.
+    expect(body.error).not.toBe('Не удалось завести календарь в Google');
+    expect(body.error).toMatch('Расписание');
+    expect(body.error).toMatch(/руками/);
+  });
+
   it('POST при потере доступа просит согласие, а не отвечает общим 500', async () => {
     google.createFailure = 'access-lost';
 
@@ -193,7 +229,11 @@ run('/api/calendar/export', () => {
     expect(google.deleted).toEqual(['zz-export-calendar']);
     // Вот это и есть проверка порядка: в момент похода в Google строка
     // обязана быть на месте. Переставь шаги — здесь окажется undefined.
-    expect(rowAtGoogleCall).toMatchObject({ calendar_id: 'zz-export-calendar' });
+    // enabled: true здесь не украшение. Без него проверка держится только
+    // на том, что disableExport удаляет строку физически: сделай кто-нибудь
+    // выключение мягким (enabled = false), и перестановка шагов снова
+    // проходила бы мимо теста (находка ревью).
+    expect(rowAtGoogleCall).toMatchObject({ calendar_id: 'zz-export-calendar', enabled: true });
     expect(await row()).toBeUndefined();
   });
 
@@ -257,5 +297,48 @@ run('/api/calendar/export', () => {
     expect(message).not.toMatch(USER_ID);
     expect(message).not.toMatch('zz-export-calendar');
     expect(message).toMatch('export');
+  });
+});
+
+/**
+ * Проверки по исходнику экрана. Рендерить его нечем — jsdom в проекте нет,
+ * — но две вещи слишком дороги, чтобы держаться на одной ничем не защищённой
+ * строке (находка ревью: расширение разрешения до полного доступа оставляло
+ * все 507 тестов зелёными).
+ *
+ * База этим тестам не нужна, поэтому они идут без run-гейта.
+ */
+describe('экран настроек: разрешение и возврат с согласия', () => {
+  const source = readFileSync(
+    new URL('../app/settings/google-calendar.tsx', import.meta.url),
+    'utf8',
+  );
+
+  it('просит только чтение и календари, созданные приложением', () => {
+    const scopes = [...source.matchAll(/https:\/\/www\.googleapis\.com\/auth\/[\w.]+/g)]
+      .map(([scope]) => scope);
+
+    // Именно на этой строке держится обещание, ради которого всё и затевалось:
+    // calendar.app.created ТЕХНИЧЕСКИ не даёт власти над чужими встречами
+    // человека, а calendar и calendar.events — дают. Список закреплён целиком,
+    // а не поиском запрещённого: так красным станет и добавление нового
+    // разрешения, которого никто не обсуждал.
+    expect(new Set(scopes)).toEqual(new Set([
+      'https://www.googleapis.com/auth/calendar.readonly',
+      'https://www.googleapis.com/auth/calendar.app.created',
+    ]));
+  });
+
+  it('после возврата с согласия сам делает запрос — и тот, за которым шли', () => {
+    // Без запроса отсюда человек увидел бы «согласие дано» и пустой Google:
+    // само согласие календаря не создаёт.
+    expect(source).toMatch('sessionStorage.getItem(EXPORT_PENDING_KEY)');
+    expect(source).toMatch("fetch('/api/calendar/export', { method })");
+
+    // Намерение решает метод. Пока его не было, согласие, взятое ради
+    // неудавшегося ВЫКЛЮЧЕНИЯ, возвращалось включением: заводился второй
+    // календарь, а первый, живой, оставался в Google без указателя.
+    expect(source).toMatch("intent === EXPORT_INTENT_ENABLE ? 'POST' : 'DELETE'");
+    expect(source).toMatch('askExportConsent(EXPORT_INTENT_DISABLE)');
   });
 });

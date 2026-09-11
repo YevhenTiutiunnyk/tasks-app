@@ -8,18 +8,33 @@ import { authClient } from '@/lib/auth-client';
 const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
 
 // Запись — отдельное разрешение и отдельное согласие, спрашивается только
-// при включении выгрузки. Оно даёт власть ровно над теми календарями,
+// в половине про выгрузку. Оно даёт власть ровно над теми календарями,
 // которые завело само приложение, и до встреч человека не дотягивается
 // технически. Полного доступа на запись (calendar, calendar.events) здесь
 // не просят ни при каких условиях.
 const EXPORT_SCOPE = 'https://www.googleapis.com/auth/calendar.app.created';
 
 // Метка «ушли за согласием на запись». Google возвращает человека на
-// /settings, и по ней экран понимает, что пора заводить календарь: без
-// этого шага человек увидел бы «согласие дано», а календаря бы не было.
+// /settings, и по ней экран понимает, что делать дальше: без этого шага
+// человек увидел бы «согласие дано», а календаря бы не было.
 // sessionStorage, а не состояние: между уходом и возвратом страница
 // полностью перезагружается.
 const EXPORT_PENDING_KEY = 'google-export-pending';
+
+// В метке лежит НАМЕРЕНИЕ, а не просто факт ухода. Находка ревью: пока
+// метка была одна на всех, согласие, взятое ради неудавшегося выключения,
+// возвращалось запросом на включение — заводился второй календарь, а первый,
+// живой, оставался в Google без указателя навсегда. Человек при этом нажал
+// «Выключить» и «Дать разрешение заново» и не просил ничего создавать.
+const EXPORT_INTENT_ENABLE = 'enable';
+const EXPORT_INTENT_DISABLE = 'disable';
+
+// Кнопки везде в проекте одинаковые. Константа модульная, а не в теле
+// компонента: строка не зависит от состояния и пересобираться на каждый
+// рендер ей незачем.
+const BUTTON_CLASS = 'flex h-11 shrink-0 touch-manipulation items-center rounded-lg border '
+  + 'border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline '
+  + 'disabled:opacity-50';
 
 interface CalendarItem {
   calendarId: string;
@@ -101,14 +116,21 @@ export default function GoogleCalendarSection() {
     return () => { cancelled = true; };
   }, [exportReloadToken]);
 
-  // Возврат с согласия Google. Календарь заводит этот POST и только он:
-  // само по себе согласие ничего не создаёт, и без этого шага человек
-  // остался бы с «разрешение дано» и пустым Google.
+  // Возврат с согласия Google. Само согласие ничего не создаёт и ничего
+  // не удаляет — это делает запрос отсюда, и только он.
+  //
+  // Запрос — тот, за которым человек и уходил за разрешением: шёл включать —
+  // POST, шёл выключать (кнопка «Дать разрешение заново» появляется как раз
+  // после неудавшегося выключения) — снова DELETE. Пока намерения не было,
+  // возврат всегда означал POST, и попытка ВЫКЛЮЧИТЬ заканчивалась вторым
+  // созданным календарём и включённой выгрузкой.
   useEffect(() => {
-    if (sessionStorage.getItem(EXPORT_PENDING_KEY) === null) return;
-    // Метку снимаем ДО запроса: иначе неудачный POST повторялся бы при
-    // каждом открытии настроек.
+    const intent = sessionStorage.getItem(EXPORT_PENDING_KEY);
+    if (intent !== EXPORT_INTENT_ENABLE && intent !== EXPORT_INTENT_DISABLE) return;
+    // Метку снимаем ДО запроса: иначе неудача повторялась бы при каждом
+    // открытии настроек.
     sessionStorage.removeItem(EXPORT_PENDING_KEY);
+    const method = intent === EXPORT_INTENT_ENABLE ? 'POST' : 'DELETE';
 
     let cancelled = false;
     void (async () => {
@@ -116,7 +138,7 @@ export default function GoogleCalendarSection() {
       // в теле эффекта запрещён правилом react-hooks/set-state-in-effect.
       setExportBusy(true);
       try {
-        const response = await fetch('/api/calendar/export', { method: 'POST' });
+        const response = await fetch('/api/calendar/export', { method });
         const data = await response.json().catch(() => null);
         if (cancelled) return;
         if (response.ok) {
@@ -125,7 +147,8 @@ export default function GoogleCalendarSection() {
         } else {
           // Текст отказа даёт роут: он один знает, разрешения не хватило
           // или Google сорвался по другой причине.
-          setExportError(data?.error ?? 'Не удалось включить выгрузку.');
+          setExportError(data?.error
+            ?? (method === 'POST' ? 'Не удалось включить выгрузку.' : 'Не удалось выключить выгрузку.'));
           setExportNeedsConsent(data?.needsConsent === true);
         }
       } catch {
@@ -169,14 +192,26 @@ export default function GoogleCalendarSection() {
     setReloadToken((token) => token + 1);
   }
 
-  /** Согласие на запись. Календарь заведётся уже после возврата — по метке. */
-  async function askExportConsent() {
-    sessionStorage.setItem(EXPORT_PENDING_KEY, '1');
-    await authClient.linkSocial({
-      provider: 'google',
-      scopes: [EXPORT_SCOPE],
-      callbackURL: '/settings',
-    });
+  /**
+   * Согласие на запись. Само действие произойдёт уже после возврата — по
+   * метке, и метка помнит, за чем человек шёл.
+   */
+  async function askExportConsent(intent: string) {
+    sessionStorage.setItem(EXPORT_PENDING_KEY, intent);
+    try {
+      await authClient.linkSocial({
+        provider: 'google',
+        scopes: [EXPORT_SCOPE],
+        callbackURL: '/settings',
+      });
+    } catch {
+      // Уйти не вышло — значит и возврата не будет. Метку надо снять:
+      // иначе она дождалась бы СЛЕДУЮЩЕГО, ничем не связанного захода
+      // в настройки и завела бы календарь, которого в тот раз никто
+      // не просил.
+      sessionStorage.removeItem(EXPORT_PENDING_KEY);
+      setExportError('Не удалось открыть согласие Google. Попробуй ещё раз.');
+    }
   }
 
   async function turnExportOff() {
@@ -199,9 +234,6 @@ export default function GoogleCalendarSection() {
   }
 
   const connected = (items?.length ?? 0) > 0;
-  const buttonClass = 'flex h-11 shrink-0 touch-manipulation items-center rounded-lg border '
-    + 'border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline '
-    + 'disabled:opacity-50';
 
   return (
     <section className="space-y-2">
@@ -266,7 +298,7 @@ export default function GoogleCalendarSection() {
             <button
               type="button"
               onClick={() => void connect()}
-              className={buttonClass}
+              className={BUTTON_CLASS}
             >
               {connected ? 'Подключить заново' : 'Подключить'}
             </button>
@@ -274,7 +306,7 @@ export default function GoogleCalendarSection() {
               <button
                 type="button"
                 onClick={() => void disconnect()}
-                className={buttonClass}
+                className={BUTTON_CLASS}
               >
                 Отключить
               </button>
@@ -312,9 +344,9 @@ export default function GoogleCalendarSection() {
             {exportState.broken && (
               <p className="text-xs text-red-600">
                 Выгрузка остановлена: Google больше не пускает нас в календарь
-                «Расписание». Выключи её и включи снова — заведём новый календарь.
-                Если старое «Расписание» осталось в Google, его придётся удалить
-                там руками.
+                «Расписание». Нажми «Выключить», а потом «Включить» снова — старый
+                календарь уберём, новый заведём. Если Google не даст его удалить,
+                рядом появится кнопка «Дать разрешение заново».
               </p>
             )}
 
@@ -333,7 +365,7 @@ export default function GoogleCalendarSection() {
                   type="button"
                   disabled={exportBusy}
                   onClick={() => void turnExportOff()}
-                  className={buttonClass}
+                  className={BUTTON_CLASS}
                 >
                   Выключить
                 </button>
@@ -341,18 +373,26 @@ export default function GoogleCalendarSection() {
                 <button
                   type="button"
                   disabled={exportBusy}
-                  onClick={() => void askExportConsent()}
-                  className={buttonClass}
+                  onClick={() => void askExportConsent(EXPORT_INTENT_ENABLE)}
+                  className={BUTTON_CLASS}
                 >
                   Включить
                 </button>
               )}
-              {exportNeedsConsent && (
+              {/*
+                Только при включённой выгрузке. В выключенном состоянии эта
+                кнопка встала бы рядом с «Включить», выглядела бы так же
+                и делала бы то же самое — две кнопки на одно действие
+                (и самый широкий ряд на экране в 375 пикселей). А здесь
+                делать ей есть что: «Выключить» упёрлось в отозванное
+                разрешение, и после согласия выключение повторится само.
+              */}
+              {exportNeedsConsent && exportState.enabled && (
                 <button
                   type="button"
                   disabled={exportBusy}
-                  onClick={() => void askExportConsent()}
-                  className={buttonClass}
+                  onClick={() => void askExportConsent(EXPORT_INTENT_DISABLE)}
+                  className={BUTTON_CLASS}
                 >
                   Дать разрешение заново
                 </button>
