@@ -259,6 +259,29 @@ export default function GoogleCalendarSection() {
     }
   }
 
+  /**
+   * «Попробовать снова» — находка I3 финального ревью. В Google не ходит
+   * вовсе (см. PATCH в app/api/calendar/export/route.ts) и связки не
+   * трогает: только снимает `broken_at`. Если пометка стояла заслуженно
+   * (доступ правда отозван), следующий тик планировщика получит тот же
+   * отказ и поставит её обратно — кнопка ничего не портит, просто пробует.
+   */
+  async function retryExport() {
+    setExportBusy(true);
+    setExportError('');
+    try {
+      const response = await fetch('/api/calendar/export', { method: 'PATCH' });
+      if (!response.ok) {
+        setExportError('Не удалось попробовать снова.');
+      }
+    } catch {
+      setExportError('Нет связи с сервером.');
+    } finally {
+      setExportBusy(false);
+      setExportReloadToken((token) => token + 1);
+    }
+  }
+
   async function turnExportOff() {
     setExportBusy(true);
     setExportError('');
@@ -388,10 +411,14 @@ export default function GoogleCalendarSection() {
 
             {exportState.broken && (
               <p className="text-xs text-red-600">
-                Выгрузка остановлена: Google больше не пускает нас в календарь
-                «Расписание». Нажми «Выключить», а потом «Включить» снова — старый
-                календарь уберём, новый заведём. Если Google не даст его удалить,
-                рядом появится кнопка «Дать разрешение заново».
+                Выгрузка остановлена: Google не пускает нас в календарь «Расписание».
+                Часто это временная заминка — например, Google на минуту ограничил
+                число запросов. Нажми «Попробовать снова»: это ничего не удаляет
+                и не трогает Google. Если не поможет — доступ, похоже, правда
+                отозван, и останется только «Выключить», а потом «Включить»: старый
+                календарь удалится вместе со всем, что в нём есть, и заведётся новый.
+                Если Google не даст его удалить, рядом появится кнопка
+                «Дать разрешение заново».
               </p>
             )}
 
@@ -418,6 +445,24 @@ export default function GoogleCalendarSection() {
             )}
 
             <div className="flex flex-wrap gap-2">
+              {/*
+                Первой в ряду и вне взведённого подтверждения удаления:
+                находка I3 финального ревью требовала убрать разрушительный
+                путь с позиции единственного и первого предложенного выхода
+                из «связь сломана». Рядом с «Отмена»/«Удалить насовсем» её
+                не показываем — это отдельный, более ранний шаг, а не третий
+                вариант посреди уже начатого удаления.
+              */}
+              {exportState.broken && !exportOffArmed && (
+                <button
+                  type="button"
+                  disabled={exportBusy}
+                  onClick={() => void retryExport()}
+                  className={BUTTON_CLASS}
+                >
+                  Попробовать снова
+                </button>
+              )}
               {exportState.enabled ? (
                 // Взведённое подтверждение ставит на место «Выключить»
                 // ОТМЕНУ, а удаление уводит вправо. Случайное второе касание

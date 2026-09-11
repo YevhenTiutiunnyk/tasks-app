@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { disableExport, enableExport, getExport } from '@/lib/db';
+import { disableExport, enableExport, getExport, saveExportState } from '@/lib/db';
 import { CalendarAccessLost, CalendarGone } from '@/lib/google-api';
 import { getCalendarClient } from '@/lib/google-token';
 import { requireUser } from '@/lib/require-user';
@@ -157,4 +157,28 @@ export async function DELETE(request: Request) {
 
   await disableExport(user.userId);
   return NextResponse.json({ enabled: false });
+}
+
+/**
+ * Неразрушающий выход из «связь сломана» — находка I3 финального ревью.
+ *
+ * До этой правки единственным лечением `broken_at` было «Выключить», потом
+ * «Включить» — удаление календаря «Расписание» в Google целиком и выгрузка
+ * всех задач заново. Ту же пометку ставит и настоящая потеря доступа,
+ * и превышение лимита запросов у Google (403 на оба, см. lib/google-api.ts):
+ * временную заминку чинили сносом всего, что накопилось.
+ *
+ * PATCH в Google не ходит вовсе и связки не трогает — только снимает
+ * пометку. Если причиной была не заминка, а настоящая потеря доступа,
+ * следующий тик планировщика получит тот же 401/403 и пометит связь
+ * сломанной заново; разрушительный путь остаётся доступен, просто не
+ * единственным и не первым.
+ */
+export async function PATCH(request: Request) {
+  const user = await requireUser(request);
+  if (user.response) return user.response;
+
+  await saveExportState(user.userId, { brokenAt: null });
+  const row = await getExport(user.userId);
+  return NextResponse.json({ enabled: row?.enabled ?? false, broken: row?.brokenAt != null });
 }

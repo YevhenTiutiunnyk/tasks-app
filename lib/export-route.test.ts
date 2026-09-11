@@ -57,7 +57,7 @@ vi.mock('@/lib/google-token', () => ({
 
 import { readFileSync } from 'node:fs';
 import { sql } from '@/lib/db';
-import { DELETE, GET, POST } from '@/app/api/calendar/export/route';
+import { DELETE, GET, PATCH, POST } from '@/app/api/calendar/export/route';
 // Функция, а не компонент: рендерить нечем (jsdom в проекте нет), а весь
 // двухшаговый механизм выключения лежит именно в ней.
 import { pressExportOff } from '@/app/settings/google-calendar';
@@ -76,6 +76,10 @@ function post() {
 
 function del() {
   return DELETE(new Request('http://localhost/api/calendar/export', { method: 'DELETE' }));
+}
+
+function patch() {
+  return PATCH(new Request('http://localhost/api/calendar/export', { method: 'PATCH' }));
 }
 
 /** Строка выгрузки прямо из базы — минуя getExport, чтобы проверять факт. */
@@ -113,8 +117,8 @@ run('/api/calendar/export', () => {
     vi.restoreAllMocks();
   });
 
-  it('без сессии все три метода отдают отказ requireUser и в Google не ходят', async () => {
-    for (const call of [get, post, del]) {
+  it('без сессии все методы отдают отказ requireUser и в Google не ходят', async () => {
+    for (const call of [get, post, del, patch]) {
       // Ответ каждый раз новый: тело Response читается ровно один раз,
       // общий объект на три вызова тест бы и уронил.
       session.next = { response: NextResponse.json({ error: 'Не авторизован' }, { status: 401 }) };
@@ -318,6 +322,41 @@ run('/api/calendar/export', () => {
     expect(await (await get()).json()).toEqual({ enabled: true, broken: true });
   });
 
+  // Находка I3 финального ревью: единственным лечением broken_at было
+  // «Выключить» + «Включить» — удаление всего календаря ради заминки вроде
+  // лимита запросов. PATCH обязан снимать пометку, ничего не удаляя и не
+  // создавая в Google, и не трогая таблицу связок.
+  it('PATCH снимает broken_at, не трогая Google и не трогая связки', async () => {
+    await post();
+    await sql`update google_export set broken_at = now() where user_id = ${USER_ID}`;
+    await sql`
+      insert into google_task_events (user_id, task_key, event_id, fingerprint)
+      values (${USER_ID}, 't1', 'e1', 'zz-отпечаток')
+    `;
+
+    const response = await patch();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: true, broken: false });
+    expect(await row()).toMatchObject({ calendar_id: 'zz-export-calendar', enabled: true, broken_at: null });
+    // Ни одного похода в Google — ни создания, ни удаления календаря.
+    expect(google.created).toEqual(['Расписание']); // только исходный POST, PATCH ничего не добавил
+    expect(google.deleted).toEqual([]);
+    const [link] = await sql`select event_id, fingerprint from google_task_events where user_id = ${USER_ID}`;
+    expect(link).toEqual({ event_id: 'e1', fingerprint: 'zz-отпечаток' });
+
+    await sql`delete from google_task_events where user_id = ${USER_ID}`;
+  });
+
+  it('PATCH без строки выгрузки не краснеет и в Google не ходит', async () => {
+    const response = await patch();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: false, broken: false });
+    expect(google.created).toEqual([]);
+    expect(google.deleted).toEqual([]);
+  });
+
   it('в лог уходит только стадия — ни владельца, ни названия календаря', async () => {
     google.createFailure = 'generic';
     await post();
@@ -385,5 +424,32 @@ describe('экран настроек: разрешение и возврат с
     // подтверждение.
     expect(presses).toBe(throughConfirm + 1);
     expect(throughConfirm).toBeGreaterThan(0);
+  });
+
+  // Находка I3 финального ревью: разрушительный путь («Выключить» + новое
+  // «Включить») не должен оставаться единственным и первым предложенным
+  // выходом из broken_at. Кнопка неразрушающего PATCH обязана существовать
+  // и стоять в разметке раньше кнопок «Отмена»/«Удалить насовсем».
+  it('«Попробовать снова» существует и стоит раньше разрушительных кнопок', () => {
+    expect(source).toMatch("method: 'PATCH'");
+    // Метка «Попробовать снова» встречается и в тексте под кнопками
+    // (описание причины), поэтому одного совпадения по строке мало —
+    // ищем именно ПРОВОДКУ кнопки к обработчику, как в тесте двухшагового
+    // выключения выше.
+    expect(source).toMatch('onClick={() => void retryExport()}');
+    const retryButtonAt = source.indexOf('onClick={() => void retryExport()}');
+    // Первое из двух мест, где pressExportOff проводится к onClick, — это
+    // «Удалить насовсем» внутри взведённого подтверждения (JSX-тернарник
+    // пишет ветку exportOffArmed первой); второе, дальше по файлу, —
+    // невзведённое «Выключить». Обеих достаточно, чтобы «Попробовать снова»
+    // оказалась раньше самой первой разрушительной кнопки.
+    const destructiveMatch = source.match(
+      /onClick=\{\(\) =>\s*pressExportOff\(exportOffArmed, setExportOffArmed, \(\) => void turnExportOff\(\)\)\}/,
+    );
+    expect(destructiveMatch).not.toBeNull();
+    const destructiveButtonAt = destructiveMatch!.index!;
+    expect(retryButtonAt).toBeGreaterThan(0);
+    expect(destructiveButtonAt).toBeGreaterThan(0);
+    expect(retryButtonAt).toBeLessThan(destructiveButtonAt);
   });
 });
