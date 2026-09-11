@@ -808,8 +808,19 @@ test('сбой сети во время сверки не мешает обыч�
  * нет `id` — идентификатор выдаётся случайный, и второе создание заводит
  * ВТОРОЕ событие вместо ответа 409.
  */
-function fakeCalendar() {
+/**
+ * `tombstonePatchFails` — находка N1 повторного ревью: Google резервирует
+ * идентификаторы удалённых событий (повторное создание с тем же id получает
+ * 409), но не обязан отдавать их тень обычному PATCH — она видна только
+ * через list?showDeleted=true. По умолчанию тень оживает (мир, для которого
+ * и задумывалось recovery на 409); true моделирует мир, где PATCH на тень
+ * отвечает 404, — именно ради него нужен запасной путь без id.
+ */
+function fakeCalendar(options: { tombstonePatchFails?: boolean } = {}) {
   const events = new Map<string, Record<string, unknown>>();
+  // Удалённые id: заняты для POST (Google отвечает 409), но не существуют
+  // для PATCH — до её собственного правила ниже.
+  const tombstones = new Set<string>();
   let generated = 0;
   const fetcher = async (url: string, init: RequestInit) => {
     const method = init.method ?? 'GET';
@@ -820,23 +831,33 @@ function fakeCalendar() {
     if (method === 'POST') {
       generated += 1;
       const id = typeof body.id === 'string' ? body.id : `случайный-${generated}`;
-      if (events.has(id)) return new Response('{}', { status: 409 });
+      if (events.has(id) || tombstones.has(id)) return new Response('{}', { status: 409 });
       events.set(id, { ...body, id });
       return new Response(JSON.stringify({ id }), { status: 200 });
     }
     if (method === 'PATCH') {
       const existing = events.get(eventId);
-      if (!existing) return new Response('{}', { status: 404 });
-      events.set(eventId, { ...existing, ...body, id: eventId });
-      return new Response(JSON.stringify({ id: eventId }), { status: 200 });
+      if (existing) {
+        events.set(eventId, { ...existing, ...body, id: eventId });
+        return new Response(JSON.stringify({ id: eventId }), { status: 200 });
+      }
+      if (tombstones.has(eventId) && !options.tombstonePatchFails) {
+        // Оживление тени: правка отменённого события возвращает его к жизни
+        // (тело несёт status: 'confirmed' — см. eventBody в lib/google-api.ts).
+        tombstones.delete(eventId);
+        events.set(eventId, { ...body, id: eventId });
+        return new Response(JSON.stringify({ id: eventId }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
     }
     if (method === 'DELETE') {
       if (!events.delete(eventId)) return new Response('{}', { status: 404 });
+      tombstones.add(eventId);
       return new Response(null, { status: 204 });
     }
     return new Response(JSON.stringify({ items: [...events.values()] }), { status: 200 });
   };
-  return { events, fetcher };
+  return { events, tombstones, fetcher };
 }
 
 /**
@@ -925,6 +946,62 @@ test('наложившиеся проходы планировщика не пл
   expect(state.links).toEqual([
     { taskKey: 't1', eventId: eventIdFor('t1'), fingerprint: fingerprintOf(task()) },
   ]);
+});
+
+/* ---------- N1 повторного ревью: ключ вернулся после удаления события ---------- */
+
+// Три обычных пути сюда: вхождение повтора сняли и восстановили (тот же
+// синтетический occ:<правило>:<дата>), задачу удалили и отменили удаление,
+// или человек стёр событие руками в Google — reconcileLinks нарочно
+// считает последнее штатным: снимает связку, а обычный разбор разницы
+// тем же проходом создаёт событие заново (create). Мир, для которого
+// и задумывалось recovery на 409: Google отдаёт тень отменённого события
+// обычному PATCH, и восстановление проходит тем же выведенным id.
+test('возврат ключа после удаления события оживляет тень тем же id', async () => {
+  const google = fakeCalendar();
+  const t = task({ id: 't1' });
+  // Событие с выведенным id уже было и было удалено — ровно то, что
+  // получилось бы, доведи обычный DELETE до конца до этого прохода.
+  google.tombstones.add(eventIdFor('t1'));
+  const { deps, state } = liveDeps(google.fetcher, [t]);
+
+  const result = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+
+  expect(result).toEqual({ applied: 1, failed: 0 });
+  expect(google.tombstones.has(eventIdFor('t1'))).toBe(false);
+  expect(google.events.size).toBe(1);
+  expect(state.links).toEqual([
+    { taskKey: 't1', eventId: eventIdFor('t1'), fingerprint: fingerprintOf(t) },
+  ]);
+});
+
+// Второй, более важный мир: Google НЕ отдаёт тень обычному PATCH — она
+// видна только через list?showDeleted=true, которую create не читает
+// (он думает, что события ещё не было). Без запасного пути без id
+// восстановление билось бы в этот 404 каждые пять минут НАВСЕГДА: связки,
+// из-за которой create бы не повторился, взяться неоткуда (create и значит
+// «связки нет»), связь помечалась бы сломанной, а «Попробовать снова»
+// (см. commit неразрушающего выхода) не лечит — планировщик тут же ставит
+// пометку обратно. Единственным настоящим выходом остался бы «Выключить»
+// + «Включить» — ровно тот разрушительный путь, который эта ветка
+// существовала, чтобы разжаловать из единственного варианта.
+test('тень, недоступная обычному PATCH, не бьёт выгрузку в 404 навсегда', async () => {
+  const google = fakeCalendar({ tombstonePatchFails: true });
+  const t = task({ id: 't1' });
+  google.tombstones.add(eventIdFor('t1'));
+  const { deps, state } = liveDeps(google.fetcher, [t]);
+
+  const result = await exportUser(deps, 'zz-user', TODAY, FOREVER);
+
+  // Не failed и не «связь сломана» — 404 на признании недоступной тени
+  // не значит «календаря нет».
+  expect(result).toEqual({ applied: 1, failed: 0 });
+  expect(google.events.size).toBe(1);
+  const [savedLink] = state.links;
+  // Новый id — случайный, НЕ выведенный: тот навсегда занят недоступной
+  // тенью, и повторная попытка тем же id получила бы тот же 409 → 404.
+  expect(savedLink.eventId).toMatch(/^случайный-/);
+  expect(savedLink).toMatchObject({ taskKey: 't1', fingerprint: fingerprintOf(t) });
 });
 
 /* ---------- кого вообще выгружаем ---------- */

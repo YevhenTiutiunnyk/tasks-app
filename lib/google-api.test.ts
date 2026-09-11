@@ -116,6 +116,18 @@ test('создание задаёт идентификатор события, �
   expect(body.id).toMatch(/^[0-9a-v]{5,1024}$/);
 });
 
+// Находка N1 повторного ревью: запасной путь recovery в lib/export-run.ts
+// на случай, когда Google не отдаёт тень удалённого события обычному PATCH
+// на выведенный id. Без этого флага событие пришлось бы чинить руками —
+// withDerivedId: false обязан вернуть insertEvent к схеме ДО перехода на
+// выведенные id, то есть вовсе не слать поле id.
+test('withDerivedId: false не шлёт идентификатор — Google назначает случайный', async () => {
+  const { sent, fetcher } = recorder(() => new Response(JSON.stringify({ id: 'e1' }), { status: 200 }));
+  await googleClient('zz-token', fetcher).insertEvent('cal-1', draft, { withDerivedId: false });
+  const body = JSON.parse(sent.body!) as EventPayload;
+  expect(body.id).toBeUndefined();
+});
+
 // Правка идёт по адресу, а идентификатор в теле Google на PATCH менять
 // не даёт. Отправь мы его и сюда — правка события со старым, случайным
 // идентификатором (такие остались от прежней схемы) получила бы отказ.

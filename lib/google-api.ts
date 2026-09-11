@@ -40,12 +40,30 @@ export interface ListEventsResult {
   nextSyncToken: string | null;
 }
 
+export interface InsertEventOptions {
+  /**
+   * По умолчанию true: событие заводится с идентификатором, выведенным
+   * из ключа задачи (см. eventIdFor в lib/export.ts) — только это делает
+   * создание идемпотентным (находка I1 финального ревью).
+   *
+   * false — запасной путь на находку N1 повторного ревью: если Google
+   * зарезервировал этот id за уже удалённым (отменённым) событием и не
+   * отдаёт его тень обычной правке (patchEvent на такой id может ответить
+   * 404, а не оживить тень — тень видна только через
+   * list?showDeleted=true), выведенный id становится непригоден навсегда,
+   * и восстановление задачи билось бы в тот же 404 каждые пять минут без
+   * выхода. Без `id` в теле Google назначает случайный — тем же путём,
+   * каким создание работало ДО перехода на выведенные id.
+   */
+  withDerivedId?: boolean;
+}
+
 export interface CalendarClient {
   listCalendars(): Promise<{ calendarId: string; summary: string }[]>;
   listEvents(calendarId: string, params: ListEventsParams): Promise<ListEventsResult>;
   createCalendar(summary: string): Promise<string>;
   deleteCalendar(calendarId: string): Promise<void>;
-  insertEvent(calendarId: string, draft: EventDraft): Promise<string>;
+  insertEvent(calendarId: string, draft: EventDraft, options?: InsertEventOptions): Promise<string>;
   patchEvent(calendarId: string, eventId: string, draft: EventDraft): Promise<void>;
   deleteEvent(calendarId: string, eventId: string): Promise<void>;
 }
@@ -239,13 +257,17 @@ export function googleClient(accessToken: string, fetcher: Fetcher = fetch): Cal
     async deleteCalendar(calendarId) {
       await call(`${BASE}/calendars/${encodeURIComponent(calendarId)}`, { method: 'DELETE' });
     },
-    async insertEvent(calendarId, draft) {
+    async insertEvent(calendarId, draft, options) {
+      // Идентификатор задаём САМИ и выводим его из ключа задачи по умолчанию
+      // — только это и делает создание идемпотентным (см. eventIdFor
+      // в lib/export.ts). `withDerivedId: false` — запасной путь на находку
+      // N1 повторного ревью, им пользуется только recovery в apply()
+      // из lib/export-run.ts, когда выведенный id оказался тенью удалённого
+      // события, которую обычный PATCH не оживляет.
+      const withDerivedId = options?.withDerivedId ?? true;
       const data = await call(`${BASE}/calendars/${encodeURIComponent(calendarId)}/events`, {
-        // Идентификатор задаём САМИ и выводим его из ключа задачи — только
-        // это и делает создание идемпотентным. Уберёшь `id` отсюда, и Google
-        // снова начнёт назначать случайный: повтор создания перестанет
-        // отвечать 409 и вернёт вечный дубль (см. eventIdFor в lib/export.ts).
-        method: 'POST', body: { id: eventIdFor(draft.taskKey), ...eventBody(draft) },
+        method: 'POST',
+        body: withDerivedId ? { id: eventIdFor(draft.taskKey), ...eventBody(draft) } : eventBody(draft),
       });
       return requireId(data);
     },
