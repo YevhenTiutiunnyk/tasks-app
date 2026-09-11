@@ -244,11 +244,19 @@ export default function GoogleCalendarSection() {
   async function askExportConsent(intent: string) {
     sessionStorage.setItem(EXPORT_PENDING_KEY, intent);
     try {
-      await authClient.linkSocial({
+      // better-fetch (на нём стоит authClient) РЕЗОЛВится и на 4xx/5xx —
+      // отдаёт { data: null, error }, а не отклоняет промис. try/catch тут
+      // ловит только сбой ДО ответа (сеть недоступна и подобное); проверка
+      // result?.error нужна отдельно — иначе протухшая сессия молча оставит
+      // метку намерения в sessionStorage, а следующий заход на /settings
+      // в той же вкладке выполнит POST или DELETE без единого нажатия
+      // (для EXPORT_INTENT_DISABLE это удаление календаря без спроса).
+      const result = await authClient.linkSocial({
         provider: 'google',
         scopes: [EXPORT_SCOPE],
         callbackURL: '/settings',
       });
+      if (result?.error) throw result.error;
     } catch {
       // Уйти не вышло — значит и возврата не будет. Метку надо снять:
       // иначе она дождалась бы СЛЕДУЮЩЕГО, ничем не связанного захода
