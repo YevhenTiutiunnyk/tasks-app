@@ -1,5 +1,6 @@
 import 'server-only';
 import type { GoogleEvent } from './calendar';
+import { addDays } from './dates';
 import { diffExport, draftFor, exportableTasks, exportWindow, fingerprintOf } from './export';
 import { CalendarAccessLost, CalendarGone, type CalendarClient } from './google-api';
 import {
@@ -245,9 +246,23 @@ export async function reconcileLinks(
   // Окно то же самое, что у обычной выгрузки: связка на событие ЗА
   // пределами окна экспорта всё равно ушла бы обычным разбором разницы
   // как лишняя, а сверке про такие события знать незачем.
+  //
+  // С запасом в сутки на каждом краю — как loadWeek в lib/week.ts. Задача
+  // хранится местной датой и местной минутой, а событие в Google уходит
+  // тем же местным временем (стенные часы плюс имя пояса), но границы
+  // здесь — UTC-полночь. Без запаса задача на последний день окна, начатая
+  // вечером по местному времени восточнее Гринвича, окажется в UTC уже
+  // ЗА timeMax, и Google её не вернёт. Цена ошибки — не «прочитали чуть
+  // меньше»: связка на такое событие выглядит для сверки отсутствующей,
+  // сверка её снимает, а обычный разбор разницы на этом же проходе создаёт
+  // ВТОРОЕ событие взамен — первое остаётся в Google без связки навсегда,
+  // потому что diffExport убирает только СВЯЗАННЫЕ лишние события, а сверка
+  // чинит только связки, не события. Читать лишние сутки безопасно:
+  // событие вне настоящего окна экспорта просто не найдёт себе задачи
+  // и не тронет ничего.
   const window = exportWindow(today);
-  const timeMin = `${window.from}T00:00:00.000Z`;
-  const timeMax = `${window.to}T00:00:00.000Z`;
+  const timeMin = `${addDays(window.from, -1)}T00:00:00.000Z`;
+  const timeMax = `${addDays(window.to, 2)}T00:00:00.000Z`;
 
   // Постраничный обход — как syncCalendar в lib/calendar-run.ts. Обрыв
   // посередине НИКОГДА не считается успехом: на этом уже спотыкались
@@ -287,7 +302,14 @@ export async function reconcileLinks(
     // Событие без нашей метки не трогается вовсе: это не наше — может быть
     // приглашением или встречей, заведённой руками прямо в этом календаре.
     const taskKey = event.extendedProperties?.private?.taskKey;
-    if (taskKey !== undefined) byTaskKey.set(taskKey, event);
+    if (taskKey === undefined) continue;
+    // Две живых записи с одной и той же меткой в норме невозможны —
+    // insertEvent заводит ровно одну на задачу, — но ручная правка в Google
+    // может это нарушить. Сверка не решает, какая из двух «настоящая»: это
+    // была бы уже правка события, а не связки, второй механизм, которого
+    // мы сознательно не заводим. Берём ту, что попалась последней в обходе,
+    // вторая тихо остаётся без связки — не хуже, чем было до сверки.
+    byTaskKey.set(taskKey, event);
   }
 
   const links = await deps.getLinks(userId);
@@ -296,9 +318,19 @@ export async function reconcileLinks(
   // Связка, чьего события в календаре больше нет (ни живого, ни вовсе
   // никакого), — снимается. Обычный разбор разницы на этом же проходе
   // увидит задачу без связки и создаст событие заново.
+  //
+  // linkedTaskKeys собирается ДО цикла и правится тут же по ходу удаления,
+  // а не строится заново из исходного `links` после него: `links` — это
+  // снимок связок на момент чтения, снятие связки его не меняет. Без правки
+  // на лету восстановление ниже могло бы решить, что метка уже связана,
+  // хотя её связку только что сняли в этом же проходе, — и не восстановить
+  // связку по другому, ещё живому событию с той же меткой (обычный разбор
+  // разницы завёл бы для задачи ТРЕТЬЕ событие, не увидев связку вовсе).
+  const linkedTaskKeys = new Set(links.map((link) => link.taskKey));
   for (const link of links) {
     if (!byEventId.has(link.eventId)) {
       await deps.deleteLink(userId, link.taskKey);
+      linkedTaskKeys.delete(link.taskKey);
       fixed += 1;
     }
   }
@@ -308,7 +340,6 @@ export async function reconcileLinks(
   // отпечаток обязан разойтись с любым настоящим, чтобы обычный разбор
   // разницы на этом же проходе счёл событие устаревшим и поправил его
   // под текущее состояние задачи — тем самым механизмом, а не вторым.
-  const linkedTaskKeys = new Set(links.map((link) => link.taskKey));
   for (const [taskKey, event] of byTaskKey) {
     if (linkedTaskKeys.has(taskKey)) continue;
     await deps.saveLink(userId, { taskKey, eventId: event.id, fingerprint: '' });
@@ -354,17 +385,54 @@ export async function exportManyUsers(
     if (row !== null && row.syncedAt !== null
         && now.getTime() - new Date(row.syncedAt).getTime() < EXPORT_INTERVAL_MS) continue;
     try {
-      // Раз в сутки — перед обычным проходом, а не вместо него: полная
-      // сверка чинит только таблицу связок по тому, что реально лежит
-      // в Google, и тут же отдаёт работу обычному exportUser этим же
-      // вызовом ниже — он на свежепочиненных связках доведёт календарь
-      // до задач. Отметку ставим сами: reconcileLinks не знает про часы.
-      // Бюджет общий: сверка тратит его наравне с остальным, отдельного
-      // потолка для неё не заводим.
-      if (row === null || row.reconciledAt === null
-          || now.getTime() - new Date(row.reconciledAt).getTime() >= RECONCILE_INTERVAL_MS) {
-        await reconcileLinks(deps, userId, today);
-        await deps.saveExportState(userId, { reconciledAt: true });
+      const dueForReconcile = row === null || row.reconciledAt === null
+          || now.getTime() - new Date(row.reconciledAt).getTime() >= RECONCILE_INTERVAL_MS;
+      // Тот же список причин «сверять нечего», что и первой строкой внутри
+      // самой reconcileLinks (третье чтение той же строки — известный,
+      // сознательно не устраняемый повтор, см. финальное ревью ступени B).
+      // Проверяем его и здесь, а не только внутри reconcileLinks: без этого
+      // saveExportState({reconciledAt:true}) ниже проставлялся бы даже
+      // владельцу, для которого сверка заведомо не могла пройти (выключена,
+      // сломана, календаря нет), — и первая НАСТОЯЩАЯ сверка после починки
+      // доступа откладывалась бы ещё на сутки, хотя в этот момент она нужнее
+      // всего.
+      const canReconcile = row !== null && row.enabled && row.brokenAt === null
+          && row.calendarId !== null;
+      if (dueForReconcile && canReconcile) {
+        try {
+          // Раз в сутки — перед обычным проходом, а не вместо него: полная
+          // сверка чинит только таблицу связок по тому, что реально лежит
+          // в Google, и тут же отдаёт работу обычному exportUser этим же
+          // вызовом ниже — он на свежепочиненных связках доведёт календарь
+          // до задач в ТОТ ЖЕ проход, а не через сутки. Отметку ставим сами:
+          // reconcileLinks не знает про часы. Бюджет общий: сверка тратит
+          // его наравне с остальным, отдельного потолка для неё не заводим.
+          await reconcileLinks(deps, userId, today);
+          // Отметку ставим ТОЛЬКО когда сверка реально прошла до конца:
+          // если её оборвал отказ ниже, reconciledAt обязан остаться
+          // прежним, а не свежим, — иначе следующая (настоящая) попытка
+          // отложится ещё на сутки.
+          await deps.saveExportState(userId, { reconciledAt: true });
+        } catch (error) {
+          if (error instanceof CalendarAccessLost || error instanceof CalendarGone) {
+            // clientFor и listEvents бросают эти же отказы, что и обычный
+            // проход, — и они обязаны получить то же лечение (находка C2
+            // ревью ступени A, см. комментарий у markBroken в exportUser):
+            // связь помечается сломанной, а syncedAt обновляется той же
+            // записью, иначе владелец опрашивался бы на каждом тике
+            // планировщика вечно вместо раза в пять минут. Обычный проход
+            // в этот раз не идёт вовсе: связь сломана, exportUser и сам
+            // вернул бы нули, прочитав её заново.
+            await deps.saveExportState(userId, { syncedAt: true, brokenAt: new Date().toISOString() });
+            continue;
+          }
+          // Прочий отказ — погода, а не беда (сеть, квота, 500 у Google):
+          // reconciledAt не трогаем, чтобы следующий тик попробовал сверку
+          // заново, но и обычный проход этим не блокируем — он полезен
+          // и тогда, когда список событий на секунду недоступен для чтения.
+          // Без этого одна неудачная сверка морила бы владельца голодом
+          // по обычной пятиминутной выгрузке до следующей суточной попытки.
+        }
       }
       const result = await exportUser(deps, userId, today, deadline, clock);
       applied += result.applied;

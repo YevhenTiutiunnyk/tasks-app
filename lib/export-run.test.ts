@@ -1,7 +1,8 @@
 import { expect, test } from 'vitest';
 import { CalendarAccessLost, CalendarGone, type CalendarClient } from './google-api';
 import { exportManyUsers, exportUser, reconcileLinks, type ExportDeps } from './export-run';
-import { fingerprintOf } from './export';
+import { addDays } from './dates';
+import { exportWindow, fingerprintOf } from './export';
 import type { ExportLink, ExportRow } from './db';
 import type { Task } from './types';
 import type { GoogleEvent } from './calendar';
@@ -445,14 +446,23 @@ test('восстановленная связка получает заведо�
   });
   await reconcileLinks(deps, 'zz-user', TODAY);
   expect(state.savedLinks[0].fingerprint).not.toBe(fingerprintOf(task()));
+  // Точное значение, а не только «не настоящий»: `.not.toBe(fingerprintOf(...))`
+  // одинаково зелен и для пустой строки, и для любой другой заведомо
+  // отличающейся строки — сам по себе он не отличает мутацию, подменившую
+  // '' на что-то ещё заведомо несовпадающее. Пустая строка — конкретное
+  // обязательство брифа, и её надо пиновать напрямую.
+  expect(state.savedLinks[0].fingerprint).toBe('');
 });
 
-test('чужое событие без нашей метки не трогается', async () => {
+test('чужое событие без нашей метки не трогается, а своё рядом остаётся нетронутым', async () => {
   const { deps, state } = setup({
-    links: [],
+    // Своя, уже совпавшая связка рядом — иначе «не трогается» проверяется
+    // только на пустых savedLinks/deletedLinks, что было бы верно и для
+    // кода, который вообще ничего не читает из Google.
+    links: [{ taskKey: 't1', eventId: 'e1', fingerprint: 'какой-то' }],
     client: {
       listEvents: async () => ({
-        events: [googleEvent({ id: 'e-чужое', extendedProperties: undefined })],
+        events: [googleEvent(), googleEvent({ id: 'e-чужое', extendedProperties: undefined })],
         nextPageToken: null, nextSyncToken: null,
       }),
     },
@@ -495,6 +505,94 @@ test('отменённое в Google событие с нашей меткой �
   expect(fixed).toBe(1);
 });
 
+// Окно чтения обязано совпасть с окном выгрузки С ЗАПАСОМ на каждом краю.
+// Задача хранится местной датой и минутой, событие в Google — тоже местным
+// временем, а границы здесь UTC-полночь: без суточного запаса задача на
+// краю окна, начатая вечером по местному времени восточнее Гринвича, в UTC
+// уже за timeMax, и listEvents её не вернёт — сверка снимет живую связку,
+// а обычный разбор разницы заведёт для неё ВТОРОЕ событие тем же проходом,
+// оставив первое сиротой навсегда (см. комментарий в reconcileLinks).
+test('сверка запрашивает окно с суточным запасом на каждом краю', async () => {
+  let seenParams: { timeMin?: string; timeMax?: string } | undefined;
+  const { deps } = setup({
+    links: [],
+    client: {
+      listEvents: async (_calendarId, params) => {
+        seenParams = params;
+        return { events: [], nextPageToken: null, nextSyncToken: null };
+      },
+    },
+  });
+  await reconcileLinks(deps, 'zz-user', TODAY);
+  const window = exportWindow(TODAY);
+  expect(seenParams?.timeMin).toBe(`${addDays(window.from, -1)}T00:00:00.000Z`);
+  expect(seenParams?.timeMax).toBe(`${addDays(window.to, 2)}T00:00:00.000Z`);
+});
+
+// Мок должен реально отдать вторую страницу, иначе мутация «читать только
+// первую» осталась бы незамеченной — а её цена та же, что у неверного
+// окна: событие со второй страницы выглядело бы отсутствующим.
+test('сверка проходит все страницы обхода, а не только первую', async () => {
+  const { deps, state } = setup({
+    links: [],
+    client: {
+      listEvents: async (_calendarId, params) => {
+        if (!params.pageToken) {
+          return {
+            events: [googleEvent({ id: 'e1', extendedProperties: { private: { taskKey: 't1' } } })],
+            nextPageToken: 'page-2', nextSyncToken: null,
+          };
+        }
+        return {
+          events: [googleEvent({ id: 'e2', extendedProperties: { private: { taskKey: 't2' } } })],
+          nextPageToken: null, nextSyncToken: null,
+        };
+      },
+    },
+  });
+  await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.savedLinks.map((link) => link.taskKey).sort()).toEqual(['t1', 't2']);
+});
+
+// Тихий выход (break вместо throw) довёл бы обход до обычного «успешного»
+// пути с усечённым списком событий — оборванный обход не считается успехом
+// (та же дыра, что ступень A ловила при замене копии целиком).
+test('повторяющийся pageToken при сверке обрывает обход ошибкой', async () => {
+  const { deps } = setup({
+    links: [],
+    client: {
+      listEvents: async () => ({ events: [], nextPageToken: 'застрял', nextSyncToken: null }),
+    },
+  });
+  await expect(reconcileLinks(deps, 'zz-user', TODAY)).rejects.toThrow();
+});
+
+// Связка на t1 указывает на событие, которое человек удалил в Google
+// руками, — но раньше уже случался сбой на самой записи (см. exportUser:
+// связка пишется ТОЛЬКО после ответа Google), событие создалось, а связка
+// не сохранилась. В календаре осталось ЖИВОЕ, но НЕСВЯЗАННОЕ событие с той
+// же меткой. Сняв мёртвую связку, сверка обязана тут же увидеть это второе
+// событие как кандидата на восстановление — если решение «уже связан»
+// принимается по снимку СВЯЗОК ДО удаления, второе событие останется
+// сиротой, а обычный разбор разницы заведёт для t1 ТРЕТЬЕ событие.
+test('снятие мёртвой связки не мешает восстановить связку по другому событию с той же меткой', async () => {
+  const { deps, state } = setup({
+    links: [{ taskKey: 't1', eventId: 'e-удалено-руками', fingerprint: 'старый' }],
+    client: {
+      listEvents: async () => ({
+        events: [googleEvent({ id: 'e-осиротевшее' })],
+        nextPageToken: null, nextSyncToken: null,
+      }),
+    },
+  });
+  const fixed = await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.deletedLinks).toEqual(['t1']);
+  expect(state.savedLinks).toEqual([
+    { taskKey: 't1', eventId: 'e-осиротевшее', fingerprint: '' },
+  ]);
+  expect(fixed).toBe(2);
+});
+
 /* ---------- exportManyUsers: суточная сверка перед обычным проходом ---------- */
 
 test('exportManyUsers не запускает полную сверку у владельца со свежей отметкой', async () => {
@@ -524,4 +622,106 @@ test('exportManyUsers запускает полную сверку у владе
   expect(state.saved.filter((s) => s.userId === 'stale' && s.patch.reconciledAt)).toEqual([
     { userId: 'stale', patch: { reconciledAt: true } },
   ]);
+});
+
+// Даже с устаревшей отметкой сверка не запускается у владельца, для
+// которого она заведомо не может пройти (связь сломана, выгрузка выключена,
+// календаря нет) — иначе reconciledAt проставился бы владельцу, у которого
+// реальная сверка не состоялась, и первая настоящая попытка после починки
+// доступа отложилась бы ещё на сутки — именно в тот момент, когда она
+// нужнее всего.
+test('exportManyUsers не запускает полную сверку у сломанной связи, даже с устаревшей отметкой', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany(
+    {
+      broken: {
+        reconciledAt: '2026-09-01T00:00:00.000Z', syncedAt: null,
+        brokenAt: '2026-09-01T00:00:00.000Z',
+      },
+    },
+    { tasks: { broken: [] } },
+  );
+  await exportManyUsers(deps, [{ userId: 'broken', today: TODAY }], now, FOREVER);
+  expect(state.touchedGoogle).toEqual([]);
+  expect(state.saved.some((s) => s.userId === 'broken' && s.patch.reconciledAt)).toBe(false);
+});
+
+// tasks: [] в тестах выше не отличает «сверка идёт до exportUser» от «после
+// него или вовсе не идёт» — оба случая молчат одинаково. Здесь связка
+// указывает на событие, которого Google не вернёт (setupMany по умолчанию
+// отдаёт пустой listEvents — как будто человек удалил событие руками):
+// сверка обязана снять мёртвую связку и отдать дело exportUser ТЕМ ЖЕ
+// проходом, а не следующим пятиминутным циклом.
+test('exportManyUsers применяет починенную сверкой связку тем же проходом, а не следующим', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const t = task({ id: 't1' });
+  const { deps, state } = setupMany(
+    { stale: { reconciledAt: '2026-09-08T00:00:00.000Z', syncedAt: null } },
+    { tasks: { stale: [t] } },
+  );
+  // Живой стенд связок: снятие и восстановление должны быть видны ПОЗЖЕ
+  // в том же вызове, а не только зафиксированы в журнале savedLinks/
+  // deletedLinks — статический возврат [] из setupMany этого не даёт.
+  let links: ExportLink[] = [
+    { taskKey: 't1', eventId: 'e-удалено-руками', fingerprint: fingerprintOf(t) },
+  ];
+  deps.getLinks = async () => links;
+  deps.deleteLink = async (_u, key) => { links = links.filter((l) => l.taskKey !== key); };
+  deps.saveLink = async (_u, link) => {
+    links = [...links.filter((l) => l.taskKey !== link.taskKey), link];
+  };
+  await exportManyUsers(deps, [{ userId: 'stale', today: TODAY }], now, FOREVER);
+  // Если бы сверка шла ПОСЛЕ exportUser (или не шла вовсе), diffExport
+  // увидел бы совпавший отпечаток старой связки и не создал бы ничего —
+  // задача осталась бы без события ещё один пятиминутный цикл.
+  expect(state.inserted).toEqual([{ userId: 'stale', taskKey: 't1' }]);
+});
+
+/* ---------- exportManyUsers: сверка не должна ломать обычный проход ---------- */
+
+// clientFor бросает CalendarAccessLost ровно тогда, когда доступ отозван
+// на стороне Google (см. getCalendarClient), и reconcileLinks вызывает его
+// первым делом — тот же отказ, что и обычный проход, и ему положено то же
+// лечение (находка C2 ревью ступени A, см. markBroken в exportUser). Без
+// него отказ на сверке считался бы «просто ошибкой одного владельца»,
+// syncedAt не обновлялся бы, а владелец опрашивался бы на каждом тике
+// планировщика вечно вместо раза в пять минут.
+test('потеря доступа во время сверки помечает связь сломанной и не запускает обычный проход', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const { deps, state } = setupMany(
+    { user: { reconciledAt: '2026-09-08T00:00:00.000Z', syncedAt: null } },
+    { tasks: { user: [task()] } },
+  );
+  const originalClientFor = deps.clientFor;
+  deps.clientFor = async (userId) => {
+    const client = await originalClientFor(userId);
+    return { ...client, listEvents: async () => { throw new CalendarAccessLost(); } };
+  };
+  await exportManyUsers(deps, [{ userId: 'user', today: TODAY }], now, FOREVER);
+  expect(state.saved).toEqual([
+    { userId: 'user', patch: { syncedAt: true, brokenAt: expect.any(String) } },
+  ]);
+  expect(state.inserted).toEqual([]);
+});
+
+// Отказ сверки, который НЕ значит «доступ отозван» (сеть, квота, 500 у
+// Google), — погода, а не беда: не должен ни ломать связь, ни морить
+// владельца голодом по обычной пятиминутной выгрузке до следующей суточной
+// попытки. reconciledAt при этом не проставляется — следующий тик
+// попробует сверку заново, а не будет ждать ещё сутки.
+test('сбой сети во время сверки не мешает обычному проходу и не отмечает сверку выполненной', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const t = task({ id: 't1' });
+  const { deps, state } = setupMany(
+    { user: { reconciledAt: '2026-09-08T00:00:00.000Z', syncedAt: null } },
+    { tasks: { user: [t] } },
+  );
+  const originalClientFor = deps.clientFor;
+  deps.clientFor = async (userId) => {
+    const client = await originalClientFor(userId);
+    return { ...client, listEvents: async () => { throw new Error('Google ответил 500'); } };
+  };
+  await exportManyUsers(deps, [{ userId: 'user', today: TODAY }], now, FOREVER);
+  expect(state.inserted).toEqual([{ userId: 'user', taskKey: 't1' }]);
+  expect(state.saved.some((s) => s.userId === 'user' && s.patch.reconciledAt)).toBe(false);
 });
