@@ -11,6 +11,7 @@ import {
   getEventsBetween,
   getExceptions,
   getExport,
+  getExportUsers,
   getLatestReport,
   getLinks,
   getNotifiableUsers,
@@ -2071,6 +2072,57 @@ run('изоляция по владельцу', () => {
       expect(await getExport(idA)).toBeNull();
       expect((await getExport(idB))!.calendarId).toBe('zz-export-cal-b');
       expect((await getLinks(idB)).map((link) => link.taskKey)).toEqual(['zz-t-b2']);
+    });
+
+    // Хвост №1 повторного ревью: у getNotifiableUsers есть точно такой же
+    // тест на отзыв (см. «отозванный владелец исчезает из выборки, а сосед
+    // остаётся» выше), а у getExportUsers — его сиблинга по join allowed_emails
+    // — не было ни одного. Убери `join allowed_emails` или замени его на что
+    // угодно неверное, и весь прогон остаётся зелёным, а задачи отозванного
+    // человека продолжают уезжать в его Google. idB здесь — та же строка
+    // с почтой в смешанном регистре (B_MIXED_CASE_EMAIL, закреплена
+    // в beforeAll), что и у getNotifiableUsers: без lower() в join этот
+    // тест был бы холостым для B в обе стороны, то же самое, что нашли
+    // и закрыли для getNotifiableUsers коммитом d2eb873.
+    it('отозванный владелец выгрузки исчезает из выборки, а сосед остаётся', async () => {
+      try {
+        await enableExport(idA, 'zz-export-cal-a');
+        await enableExport(idB, 'zz-export-cal-b');
+
+        expect(await getExportUsers()).toEqual(expect.arrayContaining([idA, idB]));
+
+        // Отзыв: адрес убирается из белого списка.
+        await sql`delete from allowed_emails where email = ${B}`;
+
+        const after = await getExportUsers();
+        expect(after).not.toContain(idB);
+        // Сосед не задет — фильтр по адресу, а не «выключить выгрузку всем».
+        expect(after).toContain(idA);
+
+        // Отзыв — не выключение выгрузки: строка google_export отозванного
+        // осталась на месте, и вернув адрес в список, он снова начнёт
+        // выгружаться, ничего не включая заново.
+        expect((await getExport(idB))!.calendarId).toBe('zz-export-cal-b');
+      } finally {
+        await sql`
+          insert into allowed_emails (email) values (${B}) on conflict (email) do nothing
+        `;
+      }
+    });
+
+    // Вторая половина того же предиката. Строка google_export у B есть
+    // (не «нет строки вовсе» — это отличало бы только сам join, а не сам
+    // фильтр), но выключена руками через SQL — enableExport её не оставляет
+    // такой ни при каких условиях. Потеряй `where e.enabled = true»,
+    // и выключенная выгрузка B тоже попала бы в список.
+    it('выключенная (enabled = false) выгрузка не попадает в список', async () => {
+      await enableExport(idA, 'zz-export-cal-a');
+      await enableExport(idB, 'zz-export-cal-b');
+      await sql`update google_export set enabled = false where user_id = ${idB}`;
+
+      const owners = await getExportUsers();
+      expect(owners).toContain(idA);
+      expect(owners).not.toContain(idB);
     });
   });
 });
