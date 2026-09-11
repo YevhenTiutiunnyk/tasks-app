@@ -13,6 +13,11 @@ export interface GoogleEvent {
   end?: { date?: string; dateTime?: string };
   organizer?: { email?: string };
   attendees?: { email?: string; self?: boolean; responseStatus?: string }[];
+  // Наша метка на СВОЁМ событии — заполняется eventBody() при создании
+  // (lib/google-api.ts) и читается полной сверкой (reconcileLinks
+  // в lib/export-run.ts), чтобы отличить своё событие без связки от
+  // чужого, которое трогать нельзя.
+  extendedProperties?: { private?: Record<string, string> };
 }
 
 function sameAddress(a: string | undefined, b: string): boolean {

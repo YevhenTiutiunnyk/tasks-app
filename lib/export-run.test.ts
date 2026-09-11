@@ -1,9 +1,10 @@
 import { expect, test } from 'vitest';
 import { CalendarAccessLost, CalendarGone, type CalendarClient } from './google-api';
-import { exportManyUsers, exportUser, type ExportDeps } from './export-run';
+import { exportManyUsers, exportUser, reconcileLinks, type ExportDeps } from './export-run';
 import { fingerprintOf } from './export';
 import type { ExportLink, ExportRow } from './db';
 import type { Task } from './types';
+import type { GoogleEvent } from './calendar';
 
 const TODAY = '2026-09-10';
 const FOREVER = Number.MAX_SAFE_INTEGER;
@@ -278,7 +279,13 @@ function setupMany(
     getExport: async (userId) => {
       state.visited.push(userId);
       return {
-        calendarId: 'cal-1', enabled: true, syncedAt: null, reconciledAt: null,
+        calendarId: 'cal-1', enabled: true, syncedAt: null,
+        // Свежая по умолчанию: большинству тестов из этого блока полная
+        // суточная сверка безразлична, и без свежей отметки каждый из них
+        // получил бы лишнее обращение к Google от reconcileLinks поверх
+        // того, что он на самом деле проверяет. Тесты про саму сверку ниже
+        // переопределяют reconciledAt явно.
+        reconciledAt: '2026-09-10T00:00:00.000Z',
         brokenAt: null, ...rows[userId],
       };
     },
@@ -377,4 +384,144 @@ test('exportManyUsers не останавливается, если один в�
   const result = await exportManyUsers(deps, users, now, FOREVER);
   expect(result.failed).toBe(1);
   expect(state.touchedGoogle).toEqual(['ok']);
+});
+
+/* ---------- reconcileLinks: полная сверка раз в сутки ---------- */
+
+// Брифом просилось verbatim с `patch: any` — здесь заменено на
+// Partial<GoogleEvent>, как заведено в остальных тестах проекта
+// (lib/calendar.test.ts), чтобы пройти правило no-explicit-any.
+function googleEvent(patch: Partial<GoogleEvent> = {}) {
+  return {
+    id: 'e1',
+    updated: '2026-09-10T10:00:00.000Z',
+    summary: 'ZZ-тренировка',
+    start: { dateTime: '2026-09-10T10:00:00+02:00' },
+    end: { dateTime: '2026-09-10T11:00:00+02:00' },
+    extendedProperties: { private: { taskKey: 't1' } },
+    ...patch,
+  };
+}
+
+// Событие удалили руками в Google. Быстрый проход этого не видит: у него
+// отпечаток совпадает. Связку надо убрать, чтобы разбор разницы создал
+// событие заново.
+test('связка без события в Google убирается', async () => {
+  const { deps, state } = setup({
+    links: [{ taskKey: 't1', eventId: 'e1', fingerprint: 'какой-то' }],
+    client: {
+      listEvents: async () => ({ events: [], nextPageToken: null, nextSyncToken: null }),
+    },
+  });
+  const fixed = await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.deletedLinks).toEqual(['t1']);
+  expect(fixed).toBe(1);
+});
+
+// Таблица связок потерялась, календарь остался. Без метки в событии
+// сверка создала бы всё заново и получились бы дубли.
+test('событие с нашей меткой без связки — связка восстанавливается', async () => {
+  const { deps, state } = setup({
+    links: [],
+    client: {
+      listEvents: async () => ({ events: [googleEvent()], nextPageToken: null, nextSyncToken: null }),
+    },
+  });
+  await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.savedLinks).toEqual([
+    { taskKey: 't1', eventId: 'e1', fingerprint: '' },
+  ]);
+});
+
+// Пустой отпечаток у восстановленной связки — не небрежность: он обязан
+// разойтись с любым настоящим, чтобы разбор разницы на этом же проходе
+// привёл событие к задаче.
+test('восстановленная связка получает заведомо несовпадающий отпечаток', async () => {
+  const { deps, state } = setup({
+    links: [],
+    client: {
+      listEvents: async () => ({ events: [googleEvent()], nextPageToken: null, nextSyncToken: null }),
+    },
+  });
+  await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.savedLinks[0].fingerprint).not.toBe(fingerprintOf(task()));
+});
+
+test('чужое событие без нашей метки не трогается', async () => {
+  const { deps, state } = setup({
+    links: [],
+    client: {
+      listEvents: async () => ({
+        events: [googleEvent({ id: 'e-чужое', extendedProperties: undefined })],
+        nextPageToken: null, nextSyncToken: null,
+      }),
+    },
+  });
+  const fixed = await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.savedLinks).toEqual([]);
+  expect(state.deletedLinks).toEqual([]);
+  expect(fixed).toBe(0);
+});
+
+test('совпавшая связка не трогается', async () => {
+  const { deps, state } = setup({
+    links: [{ taskKey: 't1', eventId: 'e1', fingerprint: 'какой-то' }],
+    client: {
+      listEvents: async () => ({ events: [googleEvent()], nextPageToken: null, nextSyncToken: null }),
+    },
+  });
+  expect(await reconcileLinks(deps, 'zz-user', TODAY)).toBe(0);
+  expect(state.savedLinks).toEqual([]);
+  expect(state.deletedLinks).toEqual([]);
+});
+
+// Ловушка: eventsUrl в lib/google-api.ts всегда просит showDeleted=true,
+// и Google присылает отменённые события — тени удалённых вручную встреч,
+// не живые события. Тень с нашей меткой нельзя принять за живое: иначе
+// связка на руками удалённое событие пережила бы ту самую сверку, ради
+// починки которой эта функция и существует.
+test('отменённое в Google событие с нашей меткой считается отсутствующим', async () => {
+  const { deps, state } = setup({
+    links: [{ taskKey: 't1', eventId: 'e1', fingerprint: 'какой-то' }],
+    client: {
+      listEvents: async () => ({
+        events: [googleEvent({ status: 'cancelled' })],
+        nextPageToken: null, nextSyncToken: null,
+      }),
+    },
+  });
+  const fixed = await reconcileLinks(deps, 'zz-user', TODAY);
+  expect(state.deletedLinks).toEqual(['t1']);
+  expect(fixed).toBe(1);
+});
+
+/* ---------- exportManyUsers: суточная сверка перед обычным проходом ---------- */
+
+test('exportManyUsers не запускает полную сверку у владельца со свежей отметкой', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  // Шесть часов назад — меньше суток.
+  const { deps, state } = setupMany(
+    { fresh: { reconciledAt: '2026-09-10T06:00:00.000Z', syncedAt: null } },
+    { tasks: { fresh: [] } },
+  );
+  await exportManyUsers(deps, [{ userId: 'fresh', today: TODAY }], now, FOREVER);
+  // Пустые задачи и пустые связки не дают обычному проходу самому тронуть
+  // Google (клиент берётся лениво) — если бы полная сверка всё же
+  // запустилась, единственным источником обращения был бы именно она.
+  expect(state.touchedGoogle).toEqual([]);
+  expect(state.saved.filter((s) => s.userId === 'fresh' && s.patch.reconciledAt)).toEqual([]);
+});
+
+test('exportManyUsers запускает полную сверку у владельца со старой отметкой', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  // Двое суток назад — больше суток.
+  const { deps, state } = setupMany(
+    { stale: { reconciledAt: '2026-09-08T06:00:00.000Z', syncedAt: null } },
+    { tasks: { stale: [] } },
+  );
+  await exportManyUsers(deps, [{ userId: 'stale', today: TODAY }], now, FOREVER);
+  expect(state.touchedGoogle).toEqual(['stale']);
+  expect(state.saved.filter((s) => s.userId === 'stale' && s.patch.reconciledAt)).toEqual([
+    { userId: 'stale', patch: { reconciledAt: true } },
+  ]);
 });

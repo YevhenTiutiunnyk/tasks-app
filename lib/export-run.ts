@@ -1,4 +1,5 @@
 import 'server-only';
+import type { GoogleEvent } from './calendar';
 import { diffExport, draftFor, exportableTasks, exportWindow, fingerprintOf } from './export';
 import { CalendarAccessLost, CalendarGone, type CalendarClient } from './google-api';
 import {
@@ -11,6 +12,16 @@ import type { Task } from './types';
 
 /** Пять минут между проходами сверщика у одного владельца — как у синхронизации. */
 const EXPORT_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Раз в сутки между полными сверками у одного владельца. */
+const RECONCILE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Запас страниц на один обход полной сверки — тот же приём и то же число,
+ * что MAX_PAGES в lib/calendar-run.ts: ошибка на стороне Google или в моке
+ * теста не должна закрутить цикл навечно и съесть весь запуск планировщика.
+ */
+const MAX_RECONCILE_PAGES = 100;
 
 /**
  * Всё, чем модуль ходит наружу, — параметром: тот же приём, что
@@ -199,6 +210,115 @@ export async function exportUser(
 }
 
 /**
+ * Полная сверка таблицы связок с тем, что реально лежит в календаре.
+ *
+ * Быстрый проход exportUser сравнивает задачи с НАШЕЙ ЖЕ таблицей связок
+ * и не видит правки, сделанные руками прямо в Google: событие, которое
+ * человек удалил или подвинул через интерфейс Google, для него неотличимо
+ * от нетронутого — отпечаток совпадает, разницы нет. Эта функция —
+ * единственное место, которое сверяется с действительностью, а не
+ * с собственной записью о ней.
+ *
+ * Чинит ТОЛЬКО связки, никогда не события: заводить второй механизм,
+ * который тоже «приводит календарь в порядок», нельзя — рано или поздно
+ * он разошёлся бы с обычным разбором разницы в том, что считать порядком.
+ * Почин связок здесь ровно на то и рассчитан: обычный diffExport на этом
+ * же проходе (exportManyUsers) увидит починенное и доведёт дело до конца —
+ * создаст событие заново или поправит его под задачу.
+ *
+ * Отметку `reconciledAt` не ставит — она в других единицах (часы), про
+ * которые эта функция ничего не знает, и ставит её вызывающий.
+ */
+export async function reconcileLinks(
+  deps: ExportDeps, userId: string, today: string,
+): Promise<number> {
+  const row = await deps.getExport(userId);
+  // Тот же список причин «трогать нечего», что и в exportUser: выключенная
+  // или ещё не заведённая выгрузка, сломанная связь — во всех случаях
+  // сверяться не с чем или незачем.
+  if (row === null || !row.enabled || row.brokenAt !== null || row.calendarId === null) {
+    return 0;
+  }
+  const calendarId = row.calendarId;
+  const client = await deps.clientFor(userId);
+
+  // Окно то же самое, что у обычной выгрузки: связка на событие ЗА
+  // пределами окна экспорта всё равно ушла бы обычным разбором разницы
+  // как лишняя, а сверке про такие события знать незачем.
+  const window = exportWindow(today);
+  const timeMin = `${window.from}T00:00:00.000Z`;
+  const timeMax = `${window.to}T00:00:00.000Z`;
+
+  // Постраничный обход — как syncCalendar в lib/calendar-run.ts. Обрыв
+  // посередине НИКОГДА не считается успехом: на этом уже спотыкались
+  // в ступени A, где усечённый обходом список уезжал в замену как будто
+  // это была вся копия. Здесь цена обрыва та же по духу — неполный список
+  // живых событий означал бы, что сверка снимает связки на события,
+  // которые на самом деле есть, — поэтому при сбое посередине обхода
+  // функция бросает исключение целиком, не чиня ничего наполовину.
+  const events: GoogleEvent[] = [];
+  let pageToken: string | undefined;
+  let pages = 0;
+  do {
+    pages += 1;
+    if (pages > MAX_RECONCILE_PAGES) {
+      throw new Error('Обход событий календаря при сверке не остановился в разумное число страниц');
+    }
+    const requestedPageToken = pageToken;
+    const page = await client.listEvents(calendarId, { timeMin, timeMax, pageToken });
+    events.push(...page.events);
+    const nextPageToken = page.nextPageToken ?? undefined;
+    if (nextPageToken !== undefined && nextPageToken === requestedPageToken) {
+      throw new Error('Google не продвигается по страницам при сверке (повторяющийся pageToken)');
+    }
+    pageToken = nextPageToken;
+  } while (pageToken);
+
+  // Ловушка: адрес запроса в lib/google-api.ts всегда просит
+  // showDeleted=true, и Google присылает отменённые события — тени
+  // удалённых вручную встреч, а не живые события. Спутать тень с живым
+  // событием значит не заметить именно то, ради чего затевалась вся
+  // полная сверка: событие, удалённое руками, выглядело бы «присутствующим»,
+  // и его связка пережила бы сверку нетронутой.
+  const live = events.filter((event) => event.status !== 'cancelled');
+  const byEventId = new Map(live.map((event) => [event.id, event]));
+  const byTaskKey = new Map<string, GoogleEvent>();
+  for (const event of live) {
+    // Событие без нашей метки не трогается вовсе: это не наше — может быть
+    // приглашением или встречей, заведённой руками прямо в этом календаре.
+    const taskKey = event.extendedProperties?.private?.taskKey;
+    if (taskKey !== undefined) byTaskKey.set(taskKey, event);
+  }
+
+  const links = await deps.getLinks(userId);
+  let fixed = 0;
+
+  // Связка, чьего события в календаре больше нет (ни живого, ни вовсе
+  // никакого), — снимается. Обычный разбор разницы на этом же проходе
+  // увидит задачу без связки и создаст событие заново.
+  for (const link of links) {
+    if (!byEventId.has(link.eventId)) {
+      await deps.deleteLink(userId, link.taskKey);
+      fixed += 1;
+    }
+  }
+
+  // Событие с нашей меткой, у которого нет связки, — связка восстанавливается
+  // с ЗАВЕДОМО несовпадающим (пустым) отпечатком. Это не небрежность:
+  // отпечаток обязан разойтись с любым настоящим, чтобы обычный разбор
+  // разницы на этом же проходе счёл событие устаревшим и поправил его
+  // под текущее состояние задачи — тем самым механизмом, а не вторым.
+  const linkedTaskKeys = new Set(links.map((link) => link.taskKey));
+  for (const [taskKey, event] of byTaskKey) {
+    if (linkedTaskKeys.has(taskKey)) continue;
+    await deps.saveLink(userId, { taskKey, eventId: event.id, fingerprint: '' });
+    fixed += 1;
+  }
+
+  return fixed;
+}
+
+/**
  * Выгрузка для многих владельцев с общим бюджетом времени.
  *
  * Пятиминутный интервал живёт здесь, а не в exportUser: сверщик умеет
@@ -234,6 +354,18 @@ export async function exportManyUsers(
     if (row !== null && row.syncedAt !== null
         && now.getTime() - new Date(row.syncedAt).getTime() < EXPORT_INTERVAL_MS) continue;
     try {
+      // Раз в сутки — перед обычным проходом, а не вместо него: полная
+      // сверка чинит только таблицу связок по тому, что реально лежит
+      // в Google, и тут же отдаёт работу обычному exportUser этим же
+      // вызовом ниже — он на свежепочиненных связках доведёт календарь
+      // до задач. Отметку ставим сами: reconcileLinks не знает про часы.
+      // Бюджет общий: сверка тратит его наравне с остальным, отдельного
+      // потолка для неё не заводим.
+      if (row === null || row.reconciledAt === null
+          || now.getTime() - new Date(row.reconciledAt).getTime() >= RECONCILE_INTERVAL_MS) {
+        await reconcileLinks(deps, userId, today);
+        await deps.saveExportState(userId, { reconciledAt: true });
+      }
       const result = await exportUser(deps, userId, today, deadline, clock);
       applied += result.applied;
       failed += result.failed;
