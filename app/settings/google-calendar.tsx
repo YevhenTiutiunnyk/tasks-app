@@ -36,6 +36,38 @@ const BUTTON_CLASS = 'flex h-11 shrink-0 touch-manipulation items-center rounded
   + 'border-hairline bg-surface px-4 text-[13px] text-ink hover:bg-hairline active:bg-hairline '
   + 'disabled:opacity-50';
 
+/**
+ * Что делает нажатие на выключение выгрузки: первое — только взводит
+ * подтверждение, второе — удаляет. Два шага здесь потому, что одно касание
+ * — слишком мало для удаления целого календаря со всеми событиями, тем
+ * более что рядом стоит почти так же названное и совершенно безобидное
+ * «Отключить» (решение владельца).
+ *
+ * Приём взят у удаления задачи (components/TaskCard.tsx): намерение живёт
+ * в состоянии, второй шаг — отдельное осознанное нажатие, и рядом всегда
+ * есть «Отмена». Диалога здесь нет нарочно: половина настроек — не карточка
+ * поверх экрана, и заводить второй способ задать один и тот же вопрос
+ * незачем.
+ *
+ * Вынесено из разметки и экспортировано ради теста: главное свойство —
+ * «одно нажатие ничего не удаляет» — обязано проверяться прогоном, а не
+ * чтением JSX глазами. Рендерить компонент в тестах нечем (jsdom в проекте
+ * нет и заводить его ради одной кнопки не станем), а эта функция и есть
+ * весь двухшаговый механизм целиком.
+ */
+export function pressExportOff(
+  armed: boolean,
+  setArmed: (next: boolean) => void,
+  turnOff: () => void,
+): void {
+  if (!armed) {
+    setArmed(true);
+    return;
+  }
+  setArmed(false);
+  turnOff();
+}
+
 interface CalendarItem {
   calendarId: string;
   summary: string;
@@ -66,6 +98,8 @@ export default function GoogleCalendarSection() {
   const [exportNeedsConsent, setExportNeedsConsent] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportReloadToken, setExportReloadToken] = useState(0);
+  // Взведённое подтверждение выключения — см. pressExportOff выше.
+  const [exportOffArmed, setExportOffArmed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,6 +149,17 @@ export default function GoogleCalendarSection() {
     })();
     return () => { cancelled = true; };
   }, [exportReloadToken]);
+
+  // Уход со страницы снимает взведённое подтверждение. Обычный переход
+  // размонтирует секцию и обнулит состояние сам, но «назад» в браузере
+  // возвращает страницу целиком из кэша вместе со всем состоянием — и
+  // человек обнаружил бы кнопку, уже готовую удалять, не помня, что её
+  // взводил. pagehide срабатывает в обоих случаях.
+  useEffect(() => {
+    const disarm = () => setExportOffArmed(false);
+    window.addEventListener('pagehide', disarm);
+    return () => window.removeEventListener('pagehide', disarm);
+  }, []);
 
   // Возврат с согласия Google. Само согласие ничего не создаёт и ничего
   // не удаляет — это делает запрос отсюда, и только он.
@@ -359,16 +404,55 @@ export default function GoogleCalendarSection() {
               </p>
             )}
 
+            {/*
+              Вопрос задаётся ровно теми же словами, что и подпись под
+              кнопкой, — «насовсем» здесь несёт всю нагрузку: без него
+              «удалим» читается как «перестанем показывать».
+            */}
+            {exportState.enabled && exportOffArmed && (
+              <p className="text-xs text-muted">
+                Сейчас удалим календарь «Расписание» из Google вместе со всеми
+                выгруженными в него задачами. Это насовсем, вернуть их оттуда
+                будет нечем.
+              </p>
+            )}
+
             <div className="flex flex-wrap gap-2">
               {exportState.enabled ? (
-                <button
-                  type="button"
-                  disabled={exportBusy}
-                  onClick={() => void turnExportOff()}
-                  className={BUTTON_CLASS}
-                >
-                  Выключить
-                </button>
+                // Взведённое подтверждение ставит на место «Выключить»
+                // ОТМЕНУ, а удаление уводит вправо. Случайное второе касание
+                // в то же место должно отменять, а не удалять.
+                exportOffArmed ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={exportBusy}
+                      onClick={() => setExportOffArmed(false)}
+                      className={BUTTON_CLASS}
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      type="button"
+                      disabled={exportBusy}
+                      onClick={() =>
+                        pressExportOff(exportOffArmed, setExportOffArmed, () => void turnExportOff())}
+                      className={BUTTON_CLASS}
+                    >
+                      Удалить насовсем
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={exportBusy}
+                    onClick={() =>
+                      pressExportOff(exportOffArmed, setExportOffArmed, () => void turnExportOff())}
+                    className={BUTTON_CLASS}
+                  >
+                    Выключить
+                  </button>
+                )
               ) : (
                 <button
                   type="button"
@@ -387,7 +471,7 @@ export default function GoogleCalendarSection() {
                 делать ей есть что: «Выключить» упёрлось в отозванное
                 разрешение, и после согласия выключение повторится само.
               */}
-              {exportNeedsConsent && exportState.enabled && (
+              {exportNeedsConsent && exportState.enabled && !exportOffArmed && (
                 <button
                   type="button"
                   disabled={exportBusy}

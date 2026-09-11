@@ -58,6 +58,9 @@ vi.mock('@/lib/google-token', () => ({
 import { readFileSync } from 'node:fs';
 import { sql } from '@/lib/db';
 import { DELETE, GET, POST } from '@/app/api/calendar/export/route';
+// Функция, а не компонент: рендерить нечем (jsdom в проекте нет), а весь
+// двухшаговый механизм выключения лежит именно в ней.
+import { pressExportOff } from '@/app/settings/google-calendar';
 
 const run = process.env.DATABASE_URL ? describe : describe.skip;
 
@@ -273,6 +276,33 @@ run('/api/calendar/export', () => {
     expect(await row()).toMatchObject({ calendar_id: 'zz-export-calendar', enabled: true });
   });
 
+  it('одно нажатие «Выключить» НЕ удаляет ни календарь в Google, ни строку', async () => {
+    await post();
+
+    // pressExportOff — весь двухшаговый механизм кнопки целиком, взятый
+    // из самого экрана. turnOff здесь — настоящее выключение, роутом
+    // и базой: если механизм когда-нибудь схлопнут обратно в одно касание,
+    // календарь удалится прямо здесь и тест покраснеет.
+    let armed = false;
+    const setArmed = (next: boolean) => { armed = next; };
+    const turnOff = async () => { await del(); };
+
+    pressExportOff(armed, setArmed, () => void turnOff());
+
+    expect(armed).toBe(true);
+    expect(google.deleted).toEqual([]);
+    expect(await row()).toMatchObject({ calendar_id: 'zz-export-calendar', enabled: true });
+
+    // Второе нажатие — то самое осознанное подтверждение, и вот оно уже
+    // удаляет. Без этой половины тест был бы зелёным и у кнопки, которая
+    // не работает вовсе.
+    pressExportOff(armed, setArmed, () => void turnOff());
+    await vi.waitFor(async () => expect(await row()).toBeUndefined());
+
+    expect(armed).toBe(false);
+    expect(google.deleted).toEqual(['zz-export-calendar']);
+  });
+
   it('DELETE без строки не краснеет и в Google не ходит', async () => {
     const response = await del();
 
@@ -340,5 +370,20 @@ describe('экран настроек: разрешение и возврат с
     // календарь, а первый, живой, оставался в Google без указателя.
     expect(source).toMatch("intent === EXPORT_INTENT_ENABLE ? 'POST' : 'DELETE'");
     expect(source).toMatch('askExportConsent(EXPORT_INTENT_DISABLE)');
+  });
+
+  it('выключение идёт только через двухшаговое подтверждение', () => {
+    // Тест выше проверяет сам механизм, но мимо него можно пройти: хватит
+    // повесить выключение на кнопку напрямую, и pressExportOff останется
+    // проверенной и никем не вызванной. Поэтому здесь — про проводку.
+    const presses = [...source.matchAll(/turnExportOff\(\)/g)].length;
+    const throughConfirm = [...source.matchAll(
+      /pressExportOff\(exportOffArmed, setExportOffArmed, \(\) => void turnExportOff\(\)\)/g,
+    )].length;
+
+    // Объявление функции плюс её вызовы из кнопок: все до единого — через
+    // подтверждение.
+    expect(presses).toBe(throughConfirm + 1);
+    expect(throughConfirm).toBeGreaterThan(0);
   });
 });
