@@ -387,6 +387,31 @@ test('exportManyUsers не останавливается, если один в�
   expect(state.touchedGoogle).toEqual(['ok']);
 });
 
+// Тест выше ловит отказ ВНУТРИ exportUser (loadRange), а этот — отказ
+// самого getExport в цикле exportManyUsers, ДО exportUser. Разница важна:
+// getExport стоял вне try до правки этой задачи, и его отказ ронял бы
+// exportManyUsers целиком — ни 'ok' не выгрузился бы, ни исключение не
+// добралось бы дальше catch на уровне владельца, а поднялось бы в роут
+// и там задело бы всё, что идёт ПОСЛЕ выгрузки (например, purgeOldSent),
+// то есть ту самую дыру I3, ради которой стадия вынесена отдельным
+// проходом после напоминаний и отчёта.
+test('exportManyUsers не останавливается, если у одного владельца падает само чтение строки экспорта', async () => {
+  const now = new Date('2026-09-10T12:00:00.000Z');
+  const users = [{ userId: 'broken', today: TODAY }, { userId: 'ok', today: TODAY }];
+  const { deps, state } = setupMany(
+    { ok: {} },
+    { tasks: { ok: [task({ id: 'ok1' })] } },
+  );
+  const originalGetExport = deps.getExport;
+  deps.getExport = async (userId) => {
+    if (userId === 'broken') throw new Error('пул соединений исчерпан');
+    return originalGetExport(userId);
+  };
+  const result = await exportManyUsers(deps, users, now, FOREVER);
+  expect(result.failed).toBe(1);
+  expect(state.touchedGoogle).toEqual(['ok']);
+});
+
 /* ---------- reconcileLinks: полная сверка раз в сутки ---------- */
 
 // Брифом просилось verbatim с `patch: any` — здесь заменено на

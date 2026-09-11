@@ -378,13 +378,19 @@ export async function exportManyUsers(
     // Секундомер идёт только вперёд, поэтому выйти можно сразу: до
     // следующих владельцев бюджет не дотянется тем более.
     if (clock() >= deadline) break;
-    const row = await deps.getExport(userId);
-    // Свежих пропускаем. Строки нет вовсе — не наше дело решать: пусть
-    // exportUser прочитает её сам и вернёт нули, тогда правило «кого
-    // трогаем» останется в одном месте.
-    if (row !== null && row.syncedAt !== null
-        && now.getTime() - new Date(row.syncedAt).getTime() < EXPORT_INTERVAL_MS) continue;
     try {
+      // getExport — тоже поход в базу и тоже может упасть (обрыв сети,
+      // перегруженный пул соединений); раньше этот вызов стоял ДО try
+      // и его отказ ронял exportManyUsers целиком, забирая с собой ещё
+      // не обработанных владельцев — та же дыра I3, только не на Google,
+      // а на первом же чтении базы для очередного владельца. Внутри try
+      // отказ гасится тем же catch, что и всё остальное в этом проходе.
+      const row = await deps.getExport(userId);
+      // Свежих пропускаем. Строки нет вовсе — не наше дело решать: пусть
+      // exportUser прочитает её сам и вернёт нули, тогда правило «кого
+      // трогаем» останется в одном месте.
+      if (row !== null && row.syncedAt !== null
+          && now.getTime() - new Date(row.syncedAt).getTime() < EXPORT_INTERVAL_MS) continue;
       const dueForReconcile = row === null || row.reconciledAt === null
           || now.getTime() - new Date(row.reconciledAt).getTime() >= RECONCILE_INTERVAL_MS;
       // Тот же список причин «сверять нечего», что и первой строкой внутри
