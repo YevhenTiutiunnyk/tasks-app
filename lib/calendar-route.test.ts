@@ -30,7 +30,7 @@ vi.mock('@/lib/google-token', () => ({
   },
 }));
 
-import { sql } from '@/lib/db';
+import { enableExport, sql } from '@/lib/db';
 import { DELETE, GET, PUT } from '@/app/api/calendar/route';
 
 const run = process.env.DATABASE_URL ? describe : describe.skip;
@@ -56,6 +56,7 @@ run('/api/calendar', () => {
     `;
     await sql`delete from google_events where user_id = ${USER_ID}`;
     await sql`delete from google_calendars where user_id = ${USER_ID}`;
+    await sql`delete from google_export where user_id = ${USER_ID}`;
     googleToken.failWith = 'access-lost';
     googleToken.calendars = [];
   });
@@ -63,6 +64,7 @@ run('/api/calendar', () => {
   afterAll(async () => {
     await sql`delete from google_events where user_id = ${USER_ID}`;
     await sql`delete from google_calendars where user_id = ${USER_ID}`;
+    await sql`delete from google_export where user_id = ${USER_ID}`;
     await sql`delete from "user" where id = ${USER_ID}`;
   });
 
@@ -155,6 +157,25 @@ run('/api/calendar', () => {
     googleToken.failWith = 'access-lost';
     body = await (await GET(new Request('http://localhost/api/calendar'))).json();
     expect(body.broken).toBe(true);
+  });
+
+  // Google отдаёт «Расписание» в listCalendars наравне с остальными. Покажи его
+  // в списке — и одна галочка превратила бы каждую задачу ещё и во встречу.
+  it('календарь выгрузки «Расписание» не попадает в список на чтение', async () => {
+    googleToken.failWith = null;
+    googleToken.calendars = [
+      { calendarId: 'primary', summary: 'ZZ-основной' },
+      { calendarId: 'zz-export-cal', summary: 'Расписание' },
+    ];
+    await enableExport(USER_ID, 'zz-export-cal');
+
+    let body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.calendars.map((c: { calendarId: string }) => c.calendarId)).toEqual(['primary']);
+
+    // Даже прямая попытка отметить его не должна вернуть его в список.
+    expect((await put(['primary', 'zz-export-cal'])).status).toBe(200);
+    body = await (await GET(new Request('http://localhost/api/calendar'))).json();
+    expect(body.calendars.map((c: { calendarId: string }) => c.calendarId)).toEqual(['primary']);
   });
 
   it('DELETE убирает строки владельца zz-cal-owner', async () => {

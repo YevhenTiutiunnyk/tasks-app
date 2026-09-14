@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from 'vitest';
 import {
-  deleteLink, disableExport, enableExport, getExport, getLinks,
-  saveExportState, saveLink, sql,
+  deleteLink, disableExport, enableExport, getCalendars, getEventsBetween, getExport, getLinks,
+  replaceCalendarEvents, saveExportState, saveLink, setSelectedCalendars, sql, upsertCalendars,
 } from './db';
 
 const run = process.env.DATABASE_URL ? describe : describe.skip;
@@ -69,5 +69,54 @@ run('выгрузка: доступ к базе', () => {
     const afterFull = await getExport(USER);
     expect(afterFull!.reconciledAt).not.toBeNull();
     expect(afterFull!.brokenAt).not.toBeNull();
+  });
+
+  function zzEvent(calendarId: string, eventId: string) {
+    return {
+      calendarId, eventId, title: `ZZ-${eventId}`,
+      startsAt: '2026-09-15T10:00:00.000Z', endsAt: '2026-09-15T11:00:00.000Z',
+      allDay: false, mine: true, organizerEmail: null, googleUpdatedAt: '2026-09-14T08:00:00.000Z',
+    };
+  }
+
+  // «Расписание» приходит в listCalendars как любой другой календарь. Отметь
+  // его в чтении — и каждая задача появилась бы в сетке ещё и встречей, с двойным
+  // напоминанием и предупреждением о наложении задачи на саму себя.
+  test('свой календарь выгрузки не виден чтению, даже если его отметили', async () => {
+    await seedUser();
+    await sql`delete from google_calendars where user_id = ${USER}`;
+    await enableExport(USER, 'zz-export-cal');
+    await upsertCalendars(USER, [
+      { calendarId: 'zz-primary', summary: 'ZZ-основной' },
+      { calendarId: 'zz-export-cal', summary: 'Расписание' },
+    ]);
+    await setSelectedCalendars(USER, ['zz-primary', 'zz-export-cal']);
+    await replaceCalendarEvents(USER, 'zz-primary', [zzEvent('zz-primary', 'meeting')]);
+    await replaceCalendarEvents(USER, 'zz-export-cal', [zzEvent('zz-export-cal', 'own-task')]);
+
+    expect((await getCalendars(USER)).map((row) => row.calendarId)).toEqual(['zz-primary']);
+    const events = await getEventsBetween(USER, '2026-09-15T00:00:00.000Z', '2026-09-16T00:00:00.000Z');
+    expect(events.map((event) => event.eventId)).toEqual(['meeting']);
+  });
+
+  // После выключения календарь в Google удалён, а upsertCalendars пропавших
+  // не убирает: без этой чистки «Расписание» вернулось бы в список чтения
+  // мёртвым пунктом, как только исчезнет строка выгрузки.
+  test('выключение убирает строку своего календаря из чтения, чужие не трогает', async () => {
+    await seedUser();
+    await sql`delete from google_calendars where user_id = ${USER}`;
+    await enableExport(USER, 'zz-export-cal');
+    await upsertCalendars(USER, [
+      { calendarId: 'zz-primary', summary: 'ZZ-основной' },
+      { calendarId: 'zz-export-cal', summary: 'Расписание' },
+    ]);
+
+    await disableExport(USER);
+
+    const [left] = await sql`
+      select count(*)::int as n from google_calendars
+      where user_id = ${USER} and calendar_id = 'zz-export-cal'`;
+    expect(left.n).toBe(0);
+    expect((await getCalendars(USER)).map((row) => row.calendarId)).toEqual(['zz-primary']);
   });
 });

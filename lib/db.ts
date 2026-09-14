@@ -580,6 +580,14 @@ export async function getCalendars(userId: string): Promise<CalendarRow[]> {
            synced_at, broken_at
     from google_calendars
     where user_id = ${userId}
+      -- Свой календарь выгрузки Google отдаёт в listCalendars наравне с чужими.
+      -- Покажи его чтению — и одна галочка превратила бы каждую задачу ещё и
+      -- во встречу, с двойным напоминанием. Отсекается здесь, а не в роуте:
+      -- этой функцией пользуются и список в настройках, и синхронизация,
+      -- и окно копии недели — забыть одного из них нельзя.
+      and calendar_id not in (
+        select calendar_id from google_export
+        where user_id = ${userId} and calendar_id is not null)
     order by calendar_id`;
   return rows.map((row) => ({
     calendarId: row.calendar_id,
@@ -769,6 +777,12 @@ export async function getEventsBetween(
     join google_calendars c
       on c.user_id = e.user_id and c.calendar_id = e.calendar_id
     where e.user_id = ${userId} and c.selected
+      -- Вторая линия к фильтру в getCalendars: если «Расписание» успели
+      -- отметить до того, как его стали отсекать, скачанные из него встречи
+      -- лежат в копии — читать их всё равно нельзя.
+      and e.calendar_id not in (
+        select calendar_id from google_export
+        where user_id = ${userId} and calendar_id is not null)
       and e.starts_at < ${toIso} and e.ends_at > ${fromIso}
     order by e.starts_at, e.event_id`;
   return rows.map((row) => ({
@@ -864,7 +878,18 @@ export async function getExportUsers(): Promise<string[]> {
 }
 
 export async function disableExport(userId: string): Promise<void> {
-  await sql`delete from google_export where user_id = ${userId}`;
+  // Календарь в Google к этому моменту удалён, а upsertCalendars пропавших
+  // не убирает. Строка чтения для него держится скрытой только фильтром по
+  // google_export — удали сначала выгрузку, и «Расписание» всплыло бы в списке
+  // чтения мёртвым пунктом. Поэтому обе строки уходят одной транзакцией,
+  // встречи копии — каскадом по внешнему ключу.
+  await sql.begin(async (tx) => {
+    await tx`
+      delete from google_calendars
+      where user_id = ${userId}
+        and calendar_id = (select calendar_id from google_export where user_id = ${userId})`;
+    await tx`delete from google_export where user_id = ${userId}`;
+  });
 }
 
 export async function saveExportState(
