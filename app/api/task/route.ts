@@ -5,6 +5,7 @@ import { applyOperations } from '@/lib/apply';
 import { badRequest, readJson } from '@/lib/http';
 import type { Horizon } from '@/lib/horizons';
 import { requireUser } from '@/lib/require-user';
+import { scheduleExport } from '@/lib/export-now';
 import { isValidSlot, isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseOccurrenceId } from '@/lib/recurrence';
@@ -37,6 +38,7 @@ async function applyOrConflict(
 export async function POST(request: Request) {
   const user = await requireUser(request);
   if (user.response) return user.response;
+  scheduleExport(user.userId);
 
   const body = await readJson<{
     today: string;
@@ -71,6 +73,7 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   const user = await requireUser(request);
   if (user.response) return user.response;
+  scheduleExport(user.userId);
 
   const body = await readJson<{
     today: string;
@@ -185,6 +188,7 @@ export async function PATCH(request: Request) {
 export async function DELETE(request: Request) {
   const user = await requireUser(request);
   if (user.response) return user.response;
+  scheduleExport(user.userId);
 
   const body = await readJson<{
     today: string;

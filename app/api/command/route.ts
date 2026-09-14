@@ -4,6 +4,7 @@ import { getChecklistTasks, getSettings, getUserKey, saveTimezone } from '@/lib/
 import { normalizeTimezone } from '@/lib/notify';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
+import { scheduleExport } from '@/lib/export-now';
 import { loadRange, loadWeek } from '@/lib/week';
 import { parseCommand } from '@/lib/parse';
 import { anthropicFailure, clientForUser } from '@/lib/key-client';
@@ -15,6 +16,7 @@ import { loadEventsForCommand } from '@/lib/command-events';
 export async function POST(request: Request) {
   const user = await requireUser(request);
   if (user.response) return user.response;
+  scheduleExport(user.userId);
 
   const body = await readJson<{ text?: string; today?: string; timezone?: string }>(request);
   if (!body) return badRequest('Не удалось разобрать тело запроса');

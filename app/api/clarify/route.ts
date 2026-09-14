@@ -3,6 +3,7 @@ import { isValidIsoDate } from '@/lib/dates';
 import { getUserKey, sql, toIsoDate } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
+import { scheduleExport } from '@/lib/export-now';
 import { isValidTaskId } from '@/lib/validate';
 import { loadWeek } from '@/lib/week';
 import { parseClarification } from '@/lib/parse-clarify';
@@ -11,6 +12,7 @@ import { anthropicFailure, clientForUser } from '@/lib/key-client';
 export async function POST(request: Request) {
   const user = await requireUser(request);
   if (user.response) return user.response;
+  scheduleExport(user.userId);
 
   const body = await readJson<{
     answers?: { taskId: string; text: string }[];

@@ -4,11 +4,13 @@ import { undoBatch } from '@/lib/apply';
 import { sql } from '@/lib/db';
 import { badRequest, readJson } from '@/lib/http';
 import { requireUser } from '@/lib/require-user';
+import { scheduleExport } from '@/lib/export-now';
 import { loadWeek } from '@/lib/week';
 
 export async function POST(request: Request) {
   const user = await requireUser(request);
   if (user.response) return user.response;
+  scheduleExport(user.userId);
 
   const body = await readJson<{ batchId?: string; today?: string }>(request);
   if (!body) return badRequest('Не удалось разобрать тело запроса');

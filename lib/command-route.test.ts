@@ -21,6 +21,13 @@ vi.mock('@/lib/parse', () => ({
   }),
 }));
 
+// Толчок выгрузки зовёт after() из Next, а тот вне настоящего запроса бросает.
+// Подменяем модуль — и заодно видим, что роут толкает выгрузку своему владельцу.
+const exportNowMock = vi.hoisted(() => ({ scheduled: [] as string[] }));
+vi.mock('@/lib/export-now', () => ({
+  scheduleExport: (userId: string) => { exportNowMock.scheduled.push(userId); },
+}));
+
 import { saveUserKey, sql } from '@/lib/db';
 import { encryptApiKey } from '@/lib/user-key';
 import { POST } from '@/app/api/command/route';
@@ -153,5 +160,16 @@ run('/api/command — I4: наложение только по изменённ�
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.overlaps).toEqual([{ taskTitle: 'ZZ-Тренировка', eventTitle: 'ZZ-Событие' }]);
+  });
+
+  // Правка обязана уезжать в Google сразу, а не ждать пятиминутного прохода
+  // планировщика — ровно ради этого толчок и заведён.
+  it('команда толкает выгрузку в Google для своего владельца', async () => {
+    exportNowMock.scheduled = [];
+    parseMock.operations = [createOp('ZZ-Толчок', TODAY)];
+
+    const response = await post('ZZ-толчок выгрузки');
+    expect(response.status).toBe(200);
+    expect(exportNowMock.scheduled).toEqual([USER_ID]);
   });
 });
