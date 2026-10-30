@@ -102,6 +102,9 @@ psql_exec < "$MIGRATIONS_DIR/0009_google_calendar.sql"
 echo "== Миграция 0010 =="
 psql_exec < "$MIGRATIONS_DIR/0010_google_export.sql"
 
+echo "== Миграция 0011 =="
+psql_exec < "$MIGRATIONS_DIR/0011_lock_public_api.sql"
+
 tables=$(docker exec "$CONTAINER" psql -U "$PGUSER" -d "$DB" -tAc \
   "select count(*) from information_schema.tables where table_schema = 'public'")
 echo "== Готово: таблиц в public — $tables =="
