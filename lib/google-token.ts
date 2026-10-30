@@ -30,13 +30,24 @@ function looksLikeApiRejection(error: unknown): boolean {
  *
  * Содержимое пойманного исключения никуда не идёт — ни в лог, ни в текст
  * новой ошибки: внутри может быть токен.
+ *
+ * С Better Auth 1.7 getAccessToken выбирает аккаунт строго по accountId
+ * (строке таблицы account): тело проверяется z.strictObject, и прежний
+ * { providerId: 'google' } отбивался бы 400 на каждом вызове. Поэтому
+ * Google-аккаунт владельца сначала находим сами — через internalAdapter,
+ * а не SQL: схема таблицы account принадлежит библиотеке.
  */
 export async function getCalendarClient(userId: string): Promise<CalendarClient> {
   let accessToken: string | undefined;
   try {
-    const result = await auth.api.getAccessToken({ body: { providerId: 'google', userId } });
+    const { internalAdapter } = await auth.$context;
+    const accounts = await internalAdapter.findAccounts(userId);
+    const google = accounts.find((account) => account.providerId === 'google');
+    if (!google) throw new CalendarAccessLost();
+    const result = await auth.api.getAccessToken({ body: { accountId: google.id, userId } });
     accessToken = result?.accessToken;
   } catch (error) {
+    if (error instanceof CalendarAccessLost) throw error;
     if (looksLikeApiRejection(error)) throw new CalendarAccessLost();
     // Не структурный отказ — например, сеть упала при самом запросе
     // за токеном. Это не «доступа нет», а транзиентный сбой: обычная

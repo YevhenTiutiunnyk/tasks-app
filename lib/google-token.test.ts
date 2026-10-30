@@ -1,15 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // lib/auth.ts заводит настоящий пул Postgres и требует секреты Google при
 // самом импорте — подменяем модуль целиком, чтобы проверить только
 // ветвление внутри getCalendarClient, без всякой инфраструктуры.
 const authMock = vi.hoisted(() => ({
   behavior: 'success' as 'success' | 'no-token' | 'api-rejection' | 'raw-failure',
+  accounts: [] as { id: string; providerId: string }[],
+  lastBody: undefined as unknown,
 }));
 vi.mock('./auth', () => ({
   auth: {
+    $context: Promise.resolve({
+      internalAdapter: {
+        findAccounts: async () => authMock.accounts,
+      },
+    }),
     api: {
-      getAccessToken: async () => {
+      getAccessToken: async ({ body }: { body: unknown }) => {
+        authMock.lastBody = body;
         if (authMock.behavior === 'success') return { accessToken: 'ya29.zz-token' };
         if (authMock.behavior === 'no-token') return {};
         if (authMock.behavior === 'api-rejection') {
@@ -33,6 +41,30 @@ import { CalendarAccessLost } from './google-api';
 import { getCalendarClient } from './google-token';
 
 describe('getCalendarClient', () => {
+  beforeEach(() => {
+    authMock.accounts = [
+      { id: 'zz-credential-account', providerId: 'credential' },
+      { id: 'zz-google-account', providerId: 'google' },
+    ];
+    authMock.lastBody = undefined;
+  });
+
+  // С Better Auth 1.7 getAccessToken принимает строго { accountId } — строку
+  // таблицы account, а не providerId: тело проверяется z.strictObject,
+  // и прежний { providerId: 'google' } отбивался бы 400 на каждом вызове.
+  it('спрашивает токен по accountId Google-аккаунта владельца', async () => {
+    authMock.behavior = 'success';
+    await getCalendarClient('zz-user');
+    expect(authMock.lastBody).toEqual({ accountId: 'zz-google-account', userId: 'zz-user' });
+  });
+
+  it('у владельца нет Google-аккаунта — доступа нет, токен не спрашивается', async () => {
+    authMock.behavior = 'success';
+    authMock.accounts = [{ id: 'zz-credential-account', providerId: 'credential' }];
+    await expect(getCalendarClient('zz-user')).rejects.toBeInstanceOf(CalendarAccessLost);
+    expect(authMock.lastBody).toBeUndefined();
+  });
+
   it('успешный ответ с токеном — отдаёт клиент', async () => {
     authMock.behavior = 'success';
     await expect(getCalendarClient('zz-user')).resolves.toBeDefined();
